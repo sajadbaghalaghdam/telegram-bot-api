@@ -8,8 +8,8 @@ use rusqlite::{params, Connection, OpenFlags};
 use crate::error::{TelegramError, TelegramResult};
 use crate::models::{File, User};
 
-const MAX_L1_CACHE_ENTRIES: usize = 4096;
-const READER_POOL_SIZE: usize = 4;
+const MAX_L1_CACHE_ENTRIES: usize = 512;
+const READER_POOL_SIZE: usize = 2;
 
 /// High-performance Async SQLite WAL Storage Engine with bounded L1 DashMap cache.
 /// Separates 1 WAL Writer from N concurrent WAL Readers to maximize concurrency and minimize RAM.
@@ -68,8 +68,8 @@ impl StorageEngine {
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA temp_store = MEMORY;
-             PRAGMA cache_size = -2000;
-             PRAGMA mmap_size = 16777216;
+             PRAGMA cache_size = -500;
+             PRAGMA mmap_size = 0;
              PRAGMA busy_timeout = 5000;",
         )
         .map_err(|e| TelegramError::Internal(format!("SQLite pragma error: {e}")))?;

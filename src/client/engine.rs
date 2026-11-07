@@ -48,6 +48,7 @@ pub struct TelegramEngine {
     pub temp_dir: PathBuf,
     pub storage: Arc<StorageEngine>,
     pub webhook_workers: Arc<DashMap<String, AbortHandle>>,
+    pub active_bots: Arc<DashMap<String, ()>>,
     pub token_filter: Option<(u64, u64)>,
     pub default_max_webhook_connections: i32,
 }
@@ -78,14 +79,14 @@ impl TelegramEngine {
         });
 
         let mut client_builder = Client::builder()
-            .pool_max_idle_per_host(16)
+            .pool_max_idle_per_host(6)
             .pool_idle_timeout(Duration::from_secs(15))
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .tcp_nodelay(true)
             .timeout(Duration::from_secs(300));
 
         let mut webhook_builder = Client::builder()
-            .pool_max_idle_per_host(16)
+            .pool_max_idle_per_host(6)
             .pool_idle_timeout(Duration::from_secs(15))
             .tcp_nodelay(true)
             .timeout(Duration::from_secs(60));
@@ -118,9 +119,28 @@ impl TelegramEngine {
             temp_dir,
             storage,
             webhook_workers: Arc::new(DashMap::new()),
+            active_bots: Arc::new(DashMap::with_capacity(64)),
             token_filter,
             default_max_webhook_connections,
         }
+    }
+
+    #[inline]
+    pub fn record_active_bot(&self, token: &str) {
+        let bot_id = token.split(':').next().unwrap_or(token);
+        if !bot_id.is_empty() && !self.active_bots.contains_key(bot_id) {
+            if self.active_bots.len() < 4096 {
+                self.active_bots.insert(bot_id.to_string(), ());
+            }
+        }
+    }
+
+    #[inline]
+    pub fn active_bots_count(&self) -> usize {
+        self.active_bots
+            .len()
+            .max(self.webhook_workers.len())
+            .max(self.storage.cached_bots_count())
     }
 
     /// Checks `--filter <remainder>/<modulo>` matching C++ ClientManager::get_client (`bot_user_id % modulo == remainder`)
@@ -246,6 +266,7 @@ impl TelegramEngine {
         if webhook_url.is_empty() {
             return;
         }
+        self.record_active_bot(&token);
 
         let engine = Arc::clone(self);
         let tok_clone = token.clone();
@@ -395,6 +416,7 @@ impl TelegramEngine {
 
     /// Execute getMe (checks SQLite WAL + L1 DashMap cache first)
     pub async fn get_me(&self, token: &str) -> TelegramResult<User> {
+        self.record_active_bot(token);
         if let Some(cached_user) = self.storage.get_bot(token).await {
             return Ok((*cached_user).clone());
         }
@@ -932,6 +954,7 @@ impl TelegramEngine {
         body_bytes: Bytes,
     ) -> TelegramResult<Bytes> {
         self.check_token_filter(token)?;
+        self.record_active_bot(token);
         let method_lower = method.to_ascii_lowercase();
 
         // 1. Handle setWebhook / deleteWebhook / getWebhookInfo / getFile specially

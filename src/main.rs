@@ -24,8 +24,29 @@ use crate::stats::ServerStats;
 use crate::storage::StorageEngine;
 use crate::watchdog::Watchdog;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Configure glibc allocator BEFORE spawning any Tokio threads so thread arenas stay strictly bounded
+    #[cfg(target_os = "linux")]
+    unsafe {
+        unsafe extern "C" {
+            fn mallopt(param: i32, value: i32) -> i32;
+        }
+        const M_TRIM_THRESHOLD: i32 = -1;
+        const M_MMAP_THRESHOLD: i32 = -3;
+        const M_ARENA_MAX: i32 = -8;
+        let _ = mallopt(M_ARENA_MAX, 2);
+        let _ = mallopt(M_MMAP_THRESHOLD, 32768);
+        let _ = mallopt(M_TRIM_THRESHOLD, 32768);
+    }
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
+    rt.block_on(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ServerConfig::parse();
 
     let level_str = match config.verbosity {
@@ -61,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let effective_files_dir = config.files_dir.as_deref().unwrap_or(&config.dir);
 
     tracing::info!(
-        "Starting Telegram Bot API Server v10.3 on {} (Local mode: {}, Dir: {}, Files Dir: {})",
+        "Starting Telegram Bot API Server v9.5 on {} (Local mode: {}, Dir: {}, Files Dir: {})",
         addr,
         config.local_mode,
         config.dir,
@@ -91,13 +112,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client_manager = Arc::new(ClientManager::new(Arc::clone(&engine)));
     let stats = Arc::new(ServerStats::new());
+    stats.set_active_bots(engine.active_bots_count());
+
     let watchdog = Watchdog::new(60);
     watchdog.clone().spawn_monitor();
 
     let state = AppState {
         config: Arc::new(config.clone()),
-        engine,
-        client_manager,
+        engine: Arc::clone(&engine),
+        client_manager: Arc::clone(&client_manager),
         stats: Arc::clone(&stats),
         watchdog,
     };
@@ -105,15 +128,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // If dedicated --http-stat-port is specified, launch dedicated stats listener on --http-stat-ip-address
     if let Some(Ok(stat_addr)) = config.stat_address() {
         let stat_stats = Arc::clone(&stats);
+        let stat_engine = Arc::clone(&engine);
+        let stat_cm = Arc::clone(&client_manager);
         tokio::spawn(async move {
             let s1 = stat_stats.clone();
+            let e1 = stat_engine.clone();
+            let c1 = stat_cm.clone();
             let s2 = stat_stats.clone();
+            let e2 = stat_engine.clone();
+            let c2 = stat_cm.clone();
             let stat_app = axum::Router::new()
                 .route(
                     "/",
                     axum::routing::get(move || {
                         let s = s1.clone();
+                        let e = e1.clone();
+                        let c = c1.clone();
                         async move {
+                            s.set_active_bots(e.active_bots_count().max(c.active_count()));
                             (
                                 [("content-type", "text/plain; charset=utf-8")],
                                 s.to_report(),
@@ -125,7 +157,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "/stats",
                     axum::routing::get(move || {
                         let s = s2.clone();
+                        let e = e2.clone();
+                        let c = c2.clone();
                         async move {
+                            s.set_active_bots(e.active_bots_count().max(c.active_count()));
                             (
                                 [("content-type", "text/plain; charset=utf-8")],
                                 s.to_report(),
