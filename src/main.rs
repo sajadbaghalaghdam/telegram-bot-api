@@ -97,15 +97,18 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Configured outgoing HTTP proxy: {}", p);
     }
 
-    let engine = Arc::new(TelegramEngine::with_options(
-        config.local_mode,
-        PathBuf::from(effective_files_dir),
-        PathBuf::from(&config.temp_dir),
-        storage,
-        proxy_url.as_deref(),
-        token_filter,
-        config.effective_max_webhook_connections(),
-    ));
+    let engine = Arc::new(
+        TelegramEngine::with_options(
+            config.local_mode,
+            PathBuf::from(effective_files_dir),
+            PathBuf::from(&config.temp_dir),
+            storage,
+            proxy_url.as_deref(),
+            token_filter,
+            config.effective_max_webhook_connections(),
+        )
+        .with_api_credentials(config.api_id, config.api_hash.clone()),
+    );
 
     // Automatically restore any active webhooks from webhooks_db.binlog and SQLite WAL
     engine.restore_webhooks().await;

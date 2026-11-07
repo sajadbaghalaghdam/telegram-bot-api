@@ -51,6 +51,8 @@ pub struct TelegramEngine {
     pub active_bots: Arc<DashMap<String, ()>>,
     pub token_filter: Option<(u64, u64)>,
     pub default_max_webhook_connections: i32,
+    pub api_id: i32,
+    pub api_hash: String,
 }
 
 impl TelegramEngine {
@@ -61,6 +63,12 @@ impl TelegramEngine {
         storage: Arc<StorageEngine>,
     ) -> Self {
         Self::with_options(local_mode, dir, temp_dir, storage, None, None, if local_mode { 100 } else { 40 })
+    }
+
+    pub fn with_api_credentials(mut self, api_id: i32, api_hash: String) -> Self {
+        self.api_id = api_id;
+        self.api_hash = api_hash;
+        self
     }
 
     pub fn with_options(
@@ -122,6 +130,8 @@ impl TelegramEngine {
             active_bots: Arc::new(DashMap::with_capacity(64)),
             token_filter,
             default_max_webhook_connections,
+            api_id: 0,
+            api_hash: String::new(),
         }
     }
 
@@ -366,6 +376,7 @@ impl TelegramEngine {
     }
 
     /// Resolve a file input string if local_mode is enabled and the path exists on disk
+    /// Matches C++ Client::get_local_file_path in telegram-bot-api/Client.cpp:10763
     #[inline]
     pub fn resolve_local_path(&self, file_input: &str) -> Option<PathBuf> {
         if !self.local_mode || file_input.is_empty() {
@@ -374,11 +385,22 @@ impl TelegramEngine {
         if file_input.starts_with("http://") || file_input.starts_with("https://") {
             return None;
         }
-        // Telegram file_ids are alphanumeric/base64url strings without path separators
         if !file_input.contains('/') && !file_input.contains('\\') {
             return None;
         }
-        let cleaned = file_input.strip_prefix("file://").unwrap_or(file_input);
+
+        let mut cleaned = file_input;
+        if let Some(after_proto) = cleaned.strip_prefix("file:/") {
+            cleaned = after_proto
+                .strip_prefix("/localhost")
+                .or_else(|| after_proto.strip_prefix('/'))
+                .unwrap_or(after_proto);
+            #[cfg(windows)]
+            {
+                cleaned = cleaned.strip_prefix('/').unwrap_or(cleaned);
+            }
+        }
+
         let path = Path::new(cleaned);
         if path.exists() && path.is_file() {
             return Some(path.to_path_buf());
@@ -388,6 +410,185 @@ impl TelegramEngine {
             return Some(rel);
         }
         None
+    }
+
+    /// Uploads a large local file (> 50 MB up to 2000 MB) directly to Telegram DC via Pure-Rust MTProto 2.0
+    /// (`upload.saveBigFilePart` + `messages.sendMedia`), returning a Bot API `Message` JSON payload.
+    pub async fn upload_local_file_mtproto(
+        &self,
+        token: &str,
+        chat_id_str: &str,
+        local_path: &Path,
+        caption: &str,
+        custom_file_name: Option<&str>,
+    ) -> TelegramResult<Bytes> {
+        if self.api_id <= 0 || self.api_hash.is_empty() {
+            return Err(TelegramError::Internal(
+                "MTProto large file upload requires valid --api-id and --api-hash".to_string(),
+            ));
+        }
+
+        // 1. Fetch bot identity and target chat metadata (including username hint for peer resolution)
+        let bot_user = self.get_me(token).await.ok();
+        let chat_url = format!(
+            "{}/bot{token}/getChat?chat_id={}",
+            self.upstream_base_url, chat_id_str
+        );
+        let mut chat_json = serde_json::json!({
+            "id": chat_id_str.parse::<i64>().unwrap_or(0),
+            "type": "private"
+        });
+        let mut hint_username: Option<String> = None;
+
+        if let Ok(resp) = self.client.get(&chat_url).send().await {
+            if let Ok(val) = resp.json::<Value>().await {
+                if let Some(res_obj) = val.get("result") {
+                    chat_json = res_obj.clone();
+                    if let Some(u) = res_obj.get("username").and_then(|v| v.as_str()) {
+                        hint_username = Some(u.to_string());
+                    }
+                }
+            }
+        }
+
+        // 2. Execute Pure-Rust MTProto 2.0 parallel 512 KB chunked upload + messages.sendMedia
+        let uploaded = crate::mtproto::upload_and_send_large_file(
+            self.api_id,
+            &self.api_hash,
+            token,
+            chat_id_str,
+            hint_username.as_deref(),
+            local_path,
+            caption,
+            custom_file_name,
+        )
+        .await
+        .map_err(|e| TelegramError::BadRequest(format!("MTProto upload failed: {e}")))?;
+
+        // 3. Register uploaded file in local SQLite WAL storage for getFile lookups
+        let file_id_str = format!(
+            "BQACAgIAAxkBAAI{:x}_{}",
+            uploaded.doc_id as u64, uploaded.message_id
+        );
+        let file_unique_id_str = format!("AgAD{:x}", (uploaded.doc_id as u64) & 0xffffffff);
+        let local_path_str = local_path.to_string_lossy().to_string();
+
+        self.storage
+            .save_cached_file(&File {
+                file_id: file_id_str.clone(),
+                file_unique_id: file_unique_id_str.clone(),
+                file_size: Some(uploaded.file_size),
+                file_path: Some(local_path_str),
+            })
+            .await;
+
+        // 4. Build standard Bot API Message JSON response
+        let mut msg_obj = serde_json::json!({
+            "message_id": uploaded.message_id,
+            "chat": chat_json,
+            "date": uploaded.date,
+            "document": {
+                "file_name": uploaded.file_name,
+                "mime_type": uploaded.mime_type,
+                "file_id": file_id_str,
+                "file_unique_id": file_unique_id_str,
+                "file_size": uploaded.file_size
+            }
+        });
+
+        if let Some(u) = bot_user {
+            if let Ok(u_val) = serde_json::to_value(u) {
+                msg_obj["from"] = u_val;
+            }
+        }
+        if !caption.is_empty() {
+            msg_obj["caption"] = Value::String(caption.to_string());
+        }
+
+        let full_resp = serde_json::json!({
+            "ok": true,
+            "result": msg_obj
+        });
+
+        Ok(Bytes::from(serde_json::to_vec(&full_resp).unwrap_or_default()))
+    }
+
+    /// In `--local` mode, if a remote HTTP/HTTPS URL points to a file > 20 MB (which standard
+    /// Bot API HTTP URL fetching rejects), stream-downloads it in O(1) memory to a temporary file
+    /// and uploads it via the Pure-Rust MTProto 2.0 512 KB chunked pipeline.
+    pub async fn maybe_upload_large_remote_url_mtproto(
+        &self,
+        token: &str,
+        chat_id_str: &str,
+        remote_url: &str,
+        caption: &str,
+    ) -> Option<TelegramResult<Bytes>> {
+        if !self.local_mode
+            || (!remote_url.starts_with("http://") && !remote_url.starts_with("https://"))
+        {
+            return None;
+        }
+
+        let head_resp = self.client.head(remote_url).send().await.ok()?;
+        let content_len = head_resp.content_length().unwrap_or(0);
+        if content_len <= 20 * 1024 * 1024 {
+            return None;
+        }
+
+        let url_file_name = remote_url
+            .split('?')
+            .next()
+            .unwrap_or(remote_url)
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("remote_file.bin")
+            .to_string();
+
+        let temp_dir = self.dir.join("temp");
+        let _ = fs::create_dir_all(&temp_dir).await;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temp_path = temp_dir.join(format!("url_{}_{}", nanos, url_file_name));
+
+        let mut get_resp = match self.client.get(remote_url).send().await {
+            Ok(r) if r.status().is_success() => r,
+            _ => return None,
+        };
+
+        let out_file = match fs::File::create(&temp_path).await {
+            Ok(f) => f,
+            Err(e) => {
+                return Some(Err(TelegramError::Internal(format!(
+                    "Failed to create temp file for remote URL: {e}"
+                ))))
+            }
+        };
+        let mut writer = tokio::io::BufWriter::with_capacity(STREAM_BUFFER_SIZE, out_file);
+        while let Ok(Some(chunk)) = get_resp.chunk().await {
+            if let Err(e) = writer.write_all(&chunk).await {
+                let _ = fs::remove_file(&temp_path).await;
+                return Some(Err(TelegramError::Internal(format!(
+                    "Failed writing remote URL stream: {e}"
+                ))));
+            }
+        }
+        let _ = writer.flush().await;
+        drop(writer);
+
+        let res = self
+            .upload_local_file_mtproto(
+                token,
+                chat_id_str,
+                &temp_path,
+                caption,
+                Some(&url_file_name),
+            )
+            .await;
+        let _ = fs::remove_file(&temp_path).await;
+        Some(res)
     }
 
     /// Build a zero-copy 64KB chunked streaming Multipart Part from a local file without loading into RAM
@@ -1086,11 +1287,57 @@ impl TelegramEngine {
                         if let Some(local_p) = self.resolve_local_path(s) {
                             local_media_field = Some((field_name.to_string(), local_p));
                             break;
+                        } else if s.starts_with("http://") || s.starts_with("https://") {
+                            let chat_id_str = map
+                                .get("chat_id")
+                                .map(|v| match v {
+                                    Value::String(s) => s.clone(),
+                                    Value::Number(n) => n.to_string(),
+                                    _ => String::new(),
+                                })
+                                .or_else(|| query_map.get("chat_id").cloned())
+                                .unwrap_or_default();
+                            let caption = map
+                                .get("caption")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| query_map.get("caption").map(|s| s.as_str()))
+                                .unwrap_or("");
+                            if let Some(res) = self
+                                .maybe_upload_large_remote_url_mtproto(token, &chat_id_str, s, caption)
+                                .await
+                            {
+                                return res;
+                            }
                         }
                     }
                 }
 
                 if let Some((media_key, local_path)) = local_media_field {
+                    let file_len = fs::metadata(&local_path)
+                        .await
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+
+                    if file_len > 49 * 1024 * 1024 {
+                        let chat_id_str = map
+                            .get("chat_id")
+                            .map(|v| match v {
+                                Value::String(s) => s.clone(),
+                                Value::Number(n) => n.to_string(),
+                                _ => String::new(),
+                            })
+                            .or_else(|| query_map.get("chat_id").cloned())
+                            .unwrap_or_default();
+                        let caption = map
+                            .get("caption")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| query_map.get("caption").map(|s| s.as_str()))
+                            .unwrap_or("");
+                        return self
+                            .upload_local_file_mtproto(token, &chat_id_str, &local_path, caption, None)
+                            .await;
+                    }
+
                     let part = Self::build_streaming_part(&local_path, "file.bin").await?;
                     let mut form = Form::new().part(media_key.clone(), part);
                     for (k, v) in map {
@@ -1117,6 +1364,34 @@ impl TelegramEngine {
                         .await
                         .map_err(|e| TelegramError::Internal(format!("Read error: {e}")))?;
                     return Ok(out);
+                }
+            }
+        }
+
+        // 3b. Check query_map for local media paths or large remote URLs in --local mode
+        if self.local_mode && !query_map.is_empty() {
+            for &field_name in MEDIA_FIELDS {
+                if let Some(val) = query_map.get(field_name) {
+                    let chat_id_str = query_map.get("chat_id").cloned().unwrap_or_default();
+                    let caption = query_map.get("caption").map(|s| s.as_str()).unwrap_or("");
+                    if let Some(local_path) = self.resolve_local_path(val) {
+                        let file_len = fs::metadata(&local_path)
+                            .await
+                            .map(|m| m.len())
+                            .unwrap_or(0);
+                        if file_len > 49 * 1024 * 1024 {
+                            return self
+                                .upload_local_file_mtproto(token, &chat_id_str, &local_path, caption, None)
+                                .await;
+                        }
+                    } else if val.starts_with("http://") || val.starts_with("https://") {
+                        if let Some(res) = self
+                            .maybe_upload_large_remote_url_mtproto(token, &chat_id_str, val, caption)
+                            .await
+                        {
+                            return res;
+                        }
+                    }
                 }
             }
         }

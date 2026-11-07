@@ -1,6 +1,7 @@
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
-/// MTProto 2.0 Key Derivation Function (KDF).
+/// MTProto 2.0 Key Derivation Function (KDF2 in td/mtproto/KDF.cpp).
 pub fn derive_keys(auth_key: &[u8; 256], msg_key: &[u8; 16], is_client: bool) -> ([u8; 32], [u8; 32]) {
     let x = if is_client { 0 } else { 8 };
 
@@ -32,6 +33,38 @@ pub fn derive_keys(auth_key: &[u8; 256], msg_key: &[u8; 16], is_client: bool) ->
     (aes_key, aes_iv)
 }
 
+/// Temporary AES Key & IV Derivation during DH Handshake (tmp_KDF in td/mtproto/KDF.cpp).
+pub fn derive_tmp_keys(server_nonce: &[u8; 16], new_nonce: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+    // sha1_a = SHA1(new_nonce + server_nonce)
+    let mut h1 = Sha1::new();
+    h1.update(new_nonce);
+    h1.update(server_nonce);
+    let sha1_new_server = h1.finalize();
+
+    // sha1_b = SHA1(server_nonce + new_nonce)
+    let mut h2 = Sha1::new();
+    h2.update(server_nonce);
+    h2.update(new_nonce);
+    let sha1_server_new = h2.finalize();
+
+    // sha1_c = SHA1(new_nonce + new_nonce)
+    let mut h3 = Sha1::new();
+    h3.update(new_nonce);
+    h3.update(new_nonce);
+    let sha1_new_new = h3.finalize();
+
+    let mut tmp_aes_key = [0u8; 32];
+    tmp_aes_key[0..20].copy_from_slice(&sha1_new_server);
+    tmp_aes_key[20..32].copy_from_slice(&sha1_server_new[0..12]);
+
+    let mut tmp_aes_iv = [0u8; 32];
+    tmp_aes_iv[0..8].copy_from_slice(&sha1_server_new[12..20]);
+    tmp_aes_iv[8..28].copy_from_slice(&sha1_new_new);
+    tmp_aes_iv[28..32].copy_from_slice(&new_nonce[0..4]);
+
+    (tmp_aes_key, tmp_aes_iv)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,15 +92,5 @@ mod tests {
         let server_to_client = derive_keys(&auth_key, &msg_key, false);
 
         assert_ne!(client_to_server, server_to_client, "Keys must differ based on direction");
-    }
-
-    #[test]
-    fn test_buffer_lengths() {
-        let auth_key = [0u8; 256];
-        let msg_key = [0u8; 16];
-        let (key, iv) = derive_keys(&auth_key, &msg_key, true);
-
-        assert_eq!(key.len(), 32);
-        assert_eq!(iv.len(), 32);
     }
 }

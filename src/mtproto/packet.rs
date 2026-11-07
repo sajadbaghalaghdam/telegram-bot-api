@@ -1,4 +1,5 @@
 use crate::mtproto::crypto::{aes_256_ige_decrypt, aes_256_ige_encrypt, derive_keys};
+use rand::RngCore;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -18,11 +19,14 @@ pub enum PacketError {
     IntegrityCheckFailed,
     #[error("Decrypted plaintext is shorter than the declared data length")]
     InvalidPayloadLength,
+    #[error("Transport error code: {0}")]
+    TransportError(i32),
     #[error("Crypto error: {0}")]
     Crypto(String),
 }
 
-/// Packs and encrypts a message according to MTProto 2.0 specification.
+/// Packs and encrypts a message according to MTProto 2.0 specification
+/// (translated from Transport::calc_message_key2 & write_crypto_impl in td/mtproto/Transport.cpp).
 pub fn pack_encrypted_message(
     auth_key: &[u8; 256],
     auth_key_id: i64,
@@ -32,16 +36,14 @@ pub fn pack_encrypted_message(
     seq_no: i32,
     message_data: &[u8],
 ) -> Result<Vec<u8>, PacketError> {
-    // 1. Calculate exact padding length
     let header_size = 32;
     let current_len = header_size + message_data.len();
-    
-    let mut padding_len = AES_BLOCK_SIZE - (current_len % AES_BLOCK_SIZE);
-    if padding_len < MIN_PADDING {
-        padding_len += ((MIN_PADDING - padding_len + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE) * AES_BLOCK_SIZE;
+
+    let mut padding_len = (AES_BLOCK_SIZE - ((current_len + MIN_PADDING) % AES_BLOCK_SIZE)) % AES_BLOCK_SIZE + MIN_PADDING;
+    if (current_len + padding_len) % AES_BLOCK_SIZE != 0 {
+        padding_len += AES_BLOCK_SIZE - ((current_len + padding_len) % AES_BLOCK_SIZE);
     }
 
-    // 2. Construct Plaintext Payload
     let mut plaintext = Vec::with_capacity(current_len + padding_len);
     plaintext.extend_from_slice(&server_salt.to_le_bytes());
     plaintext.extend_from_slice(&session_id.to_le_bytes());
@@ -50,23 +52,22 @@ pub fn pack_encrypted_message(
     plaintext.extend_from_slice(&(message_data.len() as u32).to_le_bytes());
     plaintext.extend_from_slice(message_data);
     plaintext.resize(current_len + padding_len, 0);
+    rand::thread_rng().fill_bytes(&mut plaintext[current_len..]);
 
-    // 3. Calculate msg_key
+    // msg_key_large = SHA256(substr(auth_key, 88 + 0, 32) + plaintext)
+    // msg_key = substr(msg_key_large, 8, 16)
     let mut hasher = Sha256::new();
     hasher.update(&auth_key[88..120]);
     hasher.update(&plaintext);
     let hash_result = hasher.finalize();
     let mut msg_key = [0u8; 16];
-    msg_key.copy_from_slice(&hash_result[0..MSG_KEY_SIZE]);
+    msg_key.copy_from_slice(&hash_result[8..24]);
 
-    // 4. Derive AES keys (is_client = true)
     let (aes_key, aes_iv) = derive_keys(auth_key, &msg_key, true);
 
-    // 5. Encrypt
     let encrypted_data = aes_256_ige_encrypt(&plaintext, &aes_key, &aes_iv)
         .map_err(|e| PacketError::Crypto(e.to_string()))?;
 
-    // 6. Assemble final packet: auth_key_id (8) + msg_key (16) + encrypted_data
     let mut packet = Vec::with_capacity(AUTH_KEY_ID_SIZE + MSG_KEY_SIZE + encrypted_data.len());
     packet.extend_from_slice(&auth_key_id.to_le_bytes());
     packet.extend_from_slice(&msg_key);
@@ -81,6 +82,10 @@ pub fn unpack_encrypted_message(
     auth_key_id: i64,
     packet: &[u8],
 ) -> Result<(i64, i32, Vec<u8>), PacketError> {
+    if packet.len() == 4 {
+        let code = i32::from_le_bytes(packet[0..4].try_into().unwrap());
+        return Err(PacketError::TransportError(code));
+    }
     if packet.len() < AUTH_KEY_ID_SIZE + MSG_KEY_SIZE + 32 {
         return Err(PacketError::PacketTooShort);
     }
@@ -95,15 +100,16 @@ pub fn unpack_encrypted_message(
 
     let (aes_key, aes_iv) = derive_keys(auth_key, &msg_key, false);
 
-    let plaintext = aes_256_ige_decrypt(&packet[24..], &aes_key, &aes_iv)
+    let encrypted_part = &packet[24..packet.len() - (packet.len() - 24) % 16];
+    let plaintext = aes_256_ige_decrypt(encrypted_part, &aes_key, &aes_iv)
         .map_err(|e| PacketError::Crypto(e.to_string()))?;
 
-    // Verify msg_key
+    // Verify msg_key: substr(SHA256(substr(auth_key, 88 + 8, 32) + plaintext), 8, 16)
     let mut hasher = Sha256::new();
     hasher.update(&auth_key[96..128]);
     hasher.update(&plaintext);
     let hash = hasher.finalize();
-    if &hash[0..16] != msg_key {
+    if &hash[8..24] != msg_key {
         return Err(PacketError::IntegrityCheckFailed);
     }
 
