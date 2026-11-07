@@ -34,9 +34,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         const M_TRIM_THRESHOLD: i32 = -1;
         const M_MMAP_THRESHOLD: i32 = -3;
         const M_ARENA_MAX: i32 = -8;
-        let _ = mallopt(M_ARENA_MAX, 2);
-        let _ = mallopt(M_MMAP_THRESHOLD, 32768);
-        let _ = mallopt(M_TRIM_THRESHOLD, 32768);
+        let _ = mallopt(M_ARENA_MAX, 4);
+        let _ = mallopt(M_MMAP_THRESHOLD, 131072);
+        let _ = mallopt(M_TRIM_THRESHOLD, 65536);
     }
 
     let rt = tokio::runtime::Builder::new_multi_thread()

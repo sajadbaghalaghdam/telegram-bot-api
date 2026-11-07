@@ -30,8 +30,6 @@ async fn telemetry_middleware(
     req: Request,
     next: Next,
 ) -> Response {
-    state.watchdog.kick();
-
     let bytes_in = req
         .headers()
         .get(header::CONTENT_LENGTH)

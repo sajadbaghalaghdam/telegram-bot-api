@@ -8,8 +8,8 @@ use rusqlite::{params, Connection, OpenFlags};
 use crate::error::{TelegramError, TelegramResult};
 use crate::models::{File, User};
 
-const MAX_L1_CACHE_ENTRIES: usize = 512;
-const READER_POOL_SIZE: usize = 2;
+const MAX_L1_CACHE_ENTRIES: usize = 2048;
+const READER_POOL_SIZE: usize = 4;
 
 /// High-performance Async SQLite WAL Storage Engine with bounded L1 DashMap cache.
 /// Separates 1 WAL Writer from N concurrent WAL Readers to maximize concurrency and minimize RAM.

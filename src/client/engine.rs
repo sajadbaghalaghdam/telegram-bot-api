@@ -79,15 +79,15 @@ impl TelegramEngine {
         });
 
         let mut client_builder = Client::builder()
-            .pool_max_idle_per_host(6)
-            .pool_idle_timeout(Duration::from_secs(15))
-            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .pool_max_idle_per_host(64)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Some(Duration::from_secs(60)))
             .tcp_nodelay(true)
             .timeout(Duration::from_secs(300));
 
         let mut webhook_builder = Client::builder()
-            .pool_max_idle_per_host(6)
-            .pool_idle_timeout(Duration::from_secs(15))
+            .pool_max_idle_per_host(64)
+            .pool_idle_timeout(Duration::from_secs(90))
             .tcp_nodelay(true)
             .timeout(Duration::from_secs(60));
 
@@ -291,7 +291,10 @@ impl TelegramEngine {
                 }
             }
 
-            let allowed = r#"["message","edited_message","callback_query","inline_query","message_reaction","channel_post","edited_channel_post","my_chat_member","chat_member","chat_join_request"]"#;
+            let allowed_val: Value = serde_json::from_str(
+                r#"["message","edited_message","callback_query","inline_query","message_reaction","channel_post","edited_channel_post","my_chat_member","chat_member","chat_join_request"]"#,
+            )
+            .unwrap_or(Value::Null);
 
             loop {
                 let poll_url = format!(
@@ -302,7 +305,7 @@ impl TelegramEngine {
                     "offset": next_offset,
                     "limit": 100,
                     "timeout": 20,
-                    "allowed_updates": serde_json::from_str::<Value>(allowed).unwrap_or(Value::Null),
+                    "allowed_updates": allowed_val,
                 });
 
                 match engine.client.post(&poll_url).json(&body).send().await {
@@ -363,8 +366,16 @@ impl TelegramEngine {
     }
 
     /// Resolve a file input string if local_mode is enabled and the path exists on disk
+    #[inline]
     pub fn resolve_local_path(&self, file_input: &str) -> Option<PathBuf> {
-        if !self.local_mode {
+        if !self.local_mode || file_input.is_empty() {
+            return None;
+        }
+        if file_input.starts_with("http://") || file_input.starts_with("https://") {
+            return None;
+        }
+        // Telegram file_ids are alphanumeric/base64url strings without path separators
+        if !file_input.contains('/') && !file_input.contains('\\') {
             return None;
         }
         let cleaned = file_input.strip_prefix("file://").unwrap_or(file_input);
@@ -1038,10 +1049,36 @@ impl TelegramEngine {
 
         let ct = content_type.unwrap_or("");
 
-        // 3. If JSON body in local_mode, check if any media field points to a local file path on disk
-        if self.local_mode
+        // 3. If JSON body in local_mode, fast-check whether this method and payload can possibly contain a local file path
+        let may_have_local_media = self.local_mode
+            && !body_bytes.is_empty()
             && (ct.starts_with("application/json") || body_bytes.starts_with(b"{"))
-        {
+            && (body_bytes.contains(&b'/') || body_bytes.contains(&b'\\'))
+            && !matches!(
+                method_lower.as_str(),
+                "sendmessage"
+                    | "editmessagetext"
+                    | "editmessagecaption"
+                    | "editmessagereplymarkup"
+                    | "deletemessage"
+                    | "deletemessages"
+                    | "forwardmessage"
+                    | "forwardmessages"
+                    | "copymessage"
+                    | "copymessages"
+                    | "answercallbackquery"
+                    | "answerinlinequery"
+                    | "getchat"
+                    | "getchatmember"
+                    | "getchatmembercount"
+                    | "getchatadministrators"
+                    | "banchatmember"
+                    | "unbanchatmember"
+                    | "restrictchatmember"
+                    | "sendchataction"
+            );
+
+        if may_have_local_media {
             if let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(&body_bytes) {
                 let mut local_media_field: Option<(String, PathBuf)> = None;
                 for &field_name in MEDIA_FIELDS {
