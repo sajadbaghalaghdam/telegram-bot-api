@@ -113,7 +113,7 @@ impl MtProtoConnection {
             session,
             read_buf: Vec::with_capacity(64 * 1024),
             pending_acks: Vec::with_capacity(16),
-            inited_connection: false,
+            inited_connection: true, // Auth key is already initialized & authorized with Bot credentials
             api_id,
         })
     }
@@ -528,6 +528,12 @@ impl MtProtoConnection {
                     self.process_incoming_payload(&unpacked, srv_msg_id, results, retry_needed)?;
                 }
             }
+            // pong#347773c5 msg_id:long ping_id:long
+            0x347773c5 => {
+                let _pong_msg_id = read_long(&mut cursor).map_err(Self::tl_err)?;
+                let ping_id = read_long(&mut cursor).map_err(Self::tl_err)?;
+                results.push((ping_id, Ok(cursor.to_vec())));
+            }
             _ => {}
         }
         Ok(())
@@ -738,6 +744,7 @@ pub async fn upload_and_send_large_file(
         time_offset: main_conn.session.time_offset,
     };
     auth_cache().insert(bot_token.to_string(), shared_auth);
+    drop(main_conn);
 
     // 3. Calculate 512 KB part layout (translated from FileUploader.cpp)
     let total_parts = (file_size + PART_SIZE - 1) / PART_SIZE;
@@ -795,7 +802,22 @@ pub async fn upload_and_send_large_file(
                     break;
                 }
 
-                let responses = worker_conn.rpc_call_batch(&batch_queries).await?;
+                let mut retry_count = 0;
+                let responses = loop {
+                    match worker_conn.rpc_call_batch(&batch_queries).await {
+                        Ok(resps) => break resps,
+                        Err(e) => {
+                            retry_count += 1;
+                            if retry_count > 5 {
+                                return Err(e);
+                            }
+                            tokio::time::sleep(Duration::from_millis(500 * retry_count)).await;
+                            if let Ok(new_conn) = MtProtoConnection::connect_with_auth(shared_auth, api_id).await {
+                                worker_conn = new_conn;
+                            }
+                        }
+                    }
+                };
                 for resp in responses {
                     if resp.len() >= 4 {
                         let bool_ctor = u32::from_le_bytes(resp[0..4].try_into().unwrap());
@@ -858,7 +880,19 @@ pub async fn upload_and_send_large_file(
     write_string(&mut send_req, caption);
     write_long(&mut send_req, random_id);
 
-    let send_resp = main_conn.rpc_call(&send_req).await?;
+    let mut send_conn = MtProtoConnection::connect_with_auth(shared_auth, api_id).await?;
+    let send_resp = match send_conn.rpc_call(&send_req).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            let mut retry_conn = MtProtoConnection::connect_with_auth(shared_auth, api_id).await?;
+            retry_conn.rpc_call(&send_req).await.map_err(|e2| {
+                Error::new(
+                    ErrorKind::Other,
+                    format!("MTProto sendMedia failed: {} (retry failed: {})", e, e2),
+                )
+            })?
+        }
+    };
 
     // 5. Parse message_id and document metadata from Updates response
     let (message_id, date, doc_id, access_hash) = parse_send_media_updates(&send_resp, random_id);
