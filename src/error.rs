@@ -5,13 +5,16 @@ use axum::{
 };
 use serde::Serialize;
 use thiserror::Error;
+use crate::models::api::ResponseParameters;
 
-/// Standard Telegram Bot API error response envelope.
+/// Standard Telegram Bot API error response envelope matching official C++ Query.cpp
 #[derive(Serialize)]
 struct TelegramErrorResponse {
     ok: bool,
     error_code: u16,
     description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parameters: Option<ResponseParameters>,
 }
 
 /// Strongly typed errors for the Telegram Bot API server.
@@ -31,6 +34,13 @@ pub enum TelegramError {
 
     #[error("MTProto Error: {0}")]
     MtProto(String),
+
+    #[error("{description}")]
+    ApiError {
+        code: u16,
+        description: String,
+        parameters: Option<ResponseParameters>,
+    },
 }
 
 impl TelegramError {
@@ -42,6 +52,9 @@ impl TelegramError {
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::MtProto(_) => StatusCode::BAD_GATEWAY,
+            Self::ApiError { code, .. } => {
+                StatusCode::from_u16(*code).unwrap_or(StatusCode::BAD_REQUEST)
+            }
         }
     }
 }
@@ -49,11 +62,21 @@ impl TelegramError {
 impl IntoResponse for TelegramError {
     fn into_response(self) -> Response {
         let status = self.status_code();
-        
+
+        let (desc, params) = match self {
+            Self::ApiError {
+                description,
+                parameters,
+                ..
+            } => (description, parameters),
+            other => (other.to_string(), None),
+        };
+
         let body = TelegramErrorResponse {
             ok: false,
             error_code: status.as_u16(),
-            description: self.to_string(),
+            description: desc,
+            parameters: params,
         };
 
         (status, Json(body)).into_response()
@@ -62,3 +85,26 @@ impl IntoResponse for TelegramError {
 
 /// Type alias for results within the Telegram Bot API context.
 pub type TelegramResult<T> = Result<T, TelegramError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_telegram_error_response_serialization() {
+        let err = TelegramErrorResponse {
+            ok: false,
+            error_code: 429,
+            description: "Too Many Requests: retry after 10".to_string(),
+            parameters: Some(ResponseParameters {
+                migrate_to_chat_id: None,
+                retry_after: Some(10),
+            }),
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        assert_eq!(
+            json,
+            r#"{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 10","parameters":{"retry_after":10}}"#
+        );
+    }
+}

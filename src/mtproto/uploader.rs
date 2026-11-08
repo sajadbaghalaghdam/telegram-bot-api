@@ -40,6 +40,11 @@ fn auth_cache() -> &'static DashMap<String, CachedBotAuth> {
     BOT_AUTH_CACHE.get_or_init(DashMap::new)
 }
 
+/// Clears cached MTProto authorization when a bot closes or logs out
+pub fn invalidate_bot_auth(token: &str) {
+    auth_cache().remove(token);
+}
+
 /// Production DC addresses (from td/telegram/net/ConnectionCreator.cpp)
 pub fn dc_address(dc_id: i32) -> &'static str {
     match dc_id {

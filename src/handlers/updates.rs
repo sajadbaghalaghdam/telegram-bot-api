@@ -33,7 +33,7 @@ pub async fn delete_webhook(
     State(state): State<AppState>,
 ) -> TelegramResult<Json<ApiResponse<bool>>> {
     let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let success = state.engine.delete_webhook(clean_token).await?;
+    let success = state.engine.delete_webhook(clean_token, false).await?;
     Ok(Json(ApiResponse::success(success)))
 }
 

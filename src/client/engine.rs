@@ -943,11 +943,28 @@ impl TelegramEngine {
             .await
             .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
 
+        if !resp.ok {
+            return Err(TelegramError::ApiError {
+                code: resp.error_code.unwrap_or(400),
+                description: resp.description.unwrap_or_else(|| "File not found".to_string()),
+                parameters: resp.parameters,
+            });
+        }
+
         let mut file = resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "File not found".to_string()),
-            )
+            TelegramError::BadRequest("File not found".to_string())
         })?;
+
+        // In non-local mode, reject files > 20MB matching C++ Client.cpp:17042
+        if !self.local_mode {
+            if let Some(size) = file.file_size {
+                if size > 20 * 1024 * 1024 {
+                    return Err(TelegramError::BadRequest(
+                        "Bad Request: file is too big".to_string(),
+                    ));
+                }
+            }
+        }
 
         if self.local_mode {
             if let Some(ref remote_path) = file.file_path {
@@ -1039,7 +1056,7 @@ impl TelegramEngine {
                     token,
                     &req.url,
                     req.secret_token.as_deref(),
-                    req.max_connections.unwrap_or(100),
+                    req.max_connections.unwrap_or(40),
                     req.allowed_updates.as_deref(),
                     req.ip_address.as_deref(),
                 )
@@ -1067,11 +1084,17 @@ impl TelegramEngine {
             .await
             .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
 
-        let ok = resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-            )
-        })?;
+        if !resp.ok {
+            return Err(TelegramError::ApiError {
+                code: resp.error_code.unwrap_or(400),
+                description: resp
+                    .description
+                    .unwrap_or_else(|| "Failed to set webhook".to_string()),
+                parameters: resp.parameters,
+            });
+        }
+
+        let ok = resp.result.unwrap_or(false);
 
         if ok {
             self.storage
@@ -1089,20 +1112,35 @@ impl TelegramEngine {
     }
 
     /// Execute deleteWebhook and remove from SQLite WAL + stop local webhook worker
-    pub async fn delete_webhook(&self, token: &str) -> TelegramResult<bool> {
+    pub async fn delete_webhook(&self, token: &str, drop_pending_updates: bool) -> TelegramResult<bool> {
         self.stop_webhook_worker(token);
         self.storage.delete_webhook(token).await;
 
         let url = format!("{}/bot{token}/deleteWebhook", self.upstream_base_url);
+        let drop_param = if drop_pending_updates {
+            "?drop_pending_updates=true"
+        } else {
+            ""
+        };
         let resp: ApiResponse<bool> = self
             .client
-            .post(&url)
+            .post(format!("{}{}", url, drop_param))
             .send()
             .await
             .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
             .json()
             .await
             .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
+
+        if !resp.ok {
+            return Err(TelegramError::ApiError {
+                code: resp.error_code.unwrap_or(400),
+                description: resp
+                    .description
+                    .unwrap_or_else(|| "Failed to delete webhook".to_string()),
+                parameters: resp.parameters,
+            });
+        }
 
         Ok(resp.result.unwrap_or(true))
     }
@@ -1136,11 +1174,42 @@ impl TelegramEngine {
             .await
             .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
 
+        if !resp.ok {
+            return Err(TelegramError::ApiError {
+                code: resp.error_code.unwrap_or(400),
+                description: resp
+                    .description
+                    .unwrap_or_else(|| "Unknown error".to_string()),
+                parameters: resp.parameters,
+            });
+        }
+
         resp.result.ok_or_else(|| {
             TelegramError::BadRequest(
                 resp.description.unwrap_or_else(|| "Unknown error".to_string()),
             )
         })
+    }
+
+    /// Checks if a file path exists on local disk in local mode
+    pub fn resolve_file_on_disk(&self, token: &str, file_path: &str) -> Option<PathBuf> {
+        if !self.local_mode {
+            return None;
+        }
+        let bot_folder = Self::bot_dir_name(token);
+        let cand1 = self.dir.join(&bot_folder).join(file_path);
+        if cand1.exists() && cand1.is_file() {
+            return Some(cand1);
+        }
+        let cand2 = self.dir.join(token.replace(':', "_")).join(file_path);
+        if cand2.exists() && cand2.is_file() {
+            return Some(cand2);
+        }
+        let cand3 = PathBuf::from(file_path);
+        if cand3.exists() && cand3.is_file() {
+            return Some(cand3);
+        }
+        None
     }
 
     /// Resolves a local file for zero-copy streaming if present on disk, or returns an upstream response stream
@@ -1261,19 +1330,55 @@ impl TelegramEngine {
             let req = SetWebhookRequest {
                 url: url_val,
                 ip_address,
-                max_connections: max_conn.or(Some(100)),
+                max_connections: max_conn.or(Some(40)),
                 allowed_updates,
                 drop_pending_updates,
                 secret_token,
             };
-            let _ = self.set_webhook(token, &req).await?;
+            let ok = self.set_webhook(token, &req).await?;
+            if !ok {
+                return Err(TelegramError::BadRequest("Failed to set webhook".to_string()));
+            }
             return Ok(Bytes::from_static(
                 br#"{"ok":true,"result":true,"description":"Webhook was set"}"#,
             ));
         }
 
+        if method_lower == "close" {
+            self.stop_webhook_worker(token);
+            crate::mtproto::uploader::invalidate_bot_auth(token);
+            return Ok(Bytes::from_static(
+                br#"{"ok":true,"result":true,"description":"Bot instance closed"}"#,
+            ));
+        }
+
+        if method_lower == "logout" {
+            self.stop_webhook_worker(token);
+            self.storage.delete_webhook(token).await;
+            crate::mtproto::uploader::invalidate_bot_auth(token);
+            let url = format!("{}/bot{token}/logOut", self.upstream_base_url);
+            let _ = self.client.post(&url).send().await;
+            return Ok(Bytes::from_static(
+                br#"{"ok":true,"result":true,"description":"Logged out"}"#,
+            ));
+        }
+
         if method_lower == "deletewebhook" {
-            let _ = self.delete_webhook(token).await?;
+            let drop_pending = query_map
+                .get("drop_pending_updates")
+                .and_then(|v| v.parse::<bool>().ok())
+                .or_else(|| {
+                    if !body_bytes.is_empty() {
+                        serde_json::from_slice::<Value>(&body_bytes)
+                            .ok()
+                            .and_then(|j| j.get("drop_pending_updates").and_then(|v| v.as_bool()))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(false);
+
+            let _ = self.delete_webhook(token, drop_pending).await?;
             return Ok(Bytes::from_static(
                 br#"{"ok":true,"result":true,"description":"Webhook was deleted"}"#,
             ));
@@ -1355,6 +1460,77 @@ impl TelegramEngine {
 
         if may_have_local_media {
             if let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(&body_bytes) {
+                if method_lower == "sendmediagroup" {
+                    if let Some(Value::Array(items)) = map.get("media") {
+                        let mut new_items = items.clone();
+                        let mut parts_to_add: Vec<(String, PathBuf)> = Vec::new();
+                        for (idx, it) in new_items.iter_mut().enumerate() {
+                            if let Some(m_str) = it.get("media").and_then(|v| v.as_str()) {
+                                if let Some(local_p) = self.resolve_local_path(m_str) {
+                                    let attach_name = format!("file_{idx}");
+                                    it["media"] = Value::String(format!("attach://{attach_name}"));
+                                    parts_to_add.push((attach_name, local_p));
+                                }
+                            }
+                        }
+                        if !parts_to_add.is_empty() {
+                            let mut form = Form::new();
+                            for (attach_name, local_p) in parts_to_add {
+                                let part = Self::build_streaming_part(&local_p, "media.bin").await?;
+                                form = form.part(attach_name, part);
+                            }
+                            form = form.text("media", serde_json::to_string(&new_items).unwrap_or_default());
+                            for (k, v) in map {
+                                if k == "media" || v.is_null() {
+                                    continue;
+                                }
+                                let val_str = match v {
+                                    Value::String(s) => s,
+                                    Value::Bool(b) => b.to_string(),
+                                    Value::Number(n) => n.to_string(),
+                                    other => serde_json::to_string(&other).unwrap_or_default(),
+                                };
+                                form = form.text(k, val_str);
+                            }
+                            let resp = self.client.post(&url).multipart(form).send().await
+                                .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?;
+                            let out = resp.bytes().await
+                                .map_err(|e| TelegramError::Internal(format!("Read error: {e}")))?;
+                            return Ok(out);
+                        }
+                    }
+                }
+
+                if method_lower == "editmessagemedia" {
+                    if let Some(Value::Object(mut item)) = map.get("media").cloned() {
+                        if let Some(m_str) = item.get("media").and_then(|v| v.as_str()) {
+                            if let Some(local_p) = self.resolve_local_path(m_str) {
+                                item.insert("media".to_string(), Value::String("attach://file_edit".to_string()));
+                                let part = Self::build_streaming_part(&local_p, "media.bin").await?;
+                                let mut form = Form::new().part("file_edit", part);
+                                form = form.text("media", serde_json::to_string(&item).unwrap_or_default());
+                                for (k, v) in map {
+                                    if k == "media" || v.is_null() {
+                                        continue;
+                                    }
+                                    let val_str = match v {
+                                        Value::String(s) => s,
+                                        Value::Bool(b) => b.to_string(),
+                                        Value::Number(n) => n.to_string(),
+                                        other => serde_json::to_string(&other).unwrap_or_default(),
+                                    };
+                                    form = form.text(k, val_str);
+                                }
+                                let resp = self.client.post(&url).multipart(form).send().await
+                                    .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?;
+                                let out = resp.bytes().await
+                                    .map_err(|e| TelegramError::Internal(format!("Read error: {e}")))?;
+                                return Ok(out);
+                            }
+                        }
+                    }
+                }
+
                 let mut local_media_field: Option<(String, PathBuf)> = None;
                 for &field_name in MEDIA_FIELDS {
                     if let Some(Value::String(s)) = map.get(field_name) {

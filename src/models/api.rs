@@ -1,6 +1,15 @@
 use axum::{response::{IntoResponse, Response}, Json};
 use serde::{Deserialize, Serialize};
 
+/// Contains information about why a request was unsuccessful.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ResponseParameters {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub migrate_to_chat_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<i32>,
+}
+
 /// Generic response envelope for the Telegram Bot API.
 /// 
 /// All Telegram API responses follow this structure:
@@ -8,6 +17,7 @@ use serde::{Deserialize, Serialize};
 /// - `result`: The actual response data (present if ok is true).
 /// - `error_code`: The Telegram error code (present if ok is false).
 /// - `description`: A human-readable error description (present if ok is false).
+/// - `parameters`: Extra parameters like retry_after or migrate_to_chat_id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiResponse<T> {
     pub ok: bool,
@@ -17,6 +27,8 @@ pub struct ApiResponse<T> {
     pub error_code: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<ResponseParameters>,
 }
 
 impl<T> ApiResponse<T> {
@@ -28,6 +40,7 @@ impl<T> ApiResponse<T> {
             result: Some(result),
             error_code: None,
             description: None,
+            parameters: None,
         }
     }
 
@@ -39,6 +52,23 @@ impl<T> ApiResponse<T> {
             result: None,
             error_code: Some(error_code),
             description: Some(description.into()),
+            parameters: None,
+        }
+    }
+
+    /// Creates an error API response with parameters (e.g. retry_after).
+    #[inline]
+    pub fn error_with_params(
+        error_code: u16,
+        description: impl Into<String>,
+        parameters: ResponseParameters,
+    ) -> Self {
+        Self {
+            ok: false,
+            result: None,
+            error_code: Some(error_code),
+            description: Some(description.into()),
+            parameters: Some(parameters),
         }
     }
 }
@@ -68,5 +98,22 @@ mod tests {
         let resp = ApiResponse::<()>::error(400, "Bad Request");
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, r#"{"ok":false,"error_code":400,"description":"Bad Request"}"#);
+    }
+
+    #[test]
+    fn test_error_with_params_serialization() {
+        let resp = ApiResponse::<()>::error_with_params(
+            429,
+            "Too Many Requests: retry after 5",
+            ResponseParameters {
+                migrate_to_chat_id: None,
+                retry_after: Some(5),
+            },
+        );
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(
+            json,
+            r#"{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 5","parameters":{"retry_after":5}}"#
+        );
     }
 }

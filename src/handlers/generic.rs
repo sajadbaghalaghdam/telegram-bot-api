@@ -162,3 +162,78 @@ pub async fn generic_get_handler(
     )
     .await
 }
+
+/// Handles any official Telegram Bot API POST method for the Test DC environment (/test/bot<token>/<method>)
+pub async fn generic_post_test_handler(
+    Path((token, method)): Path<(String, String)>,
+    State(state): State<AppState>,
+    Query(_query_map): Query<HashMap<String, String>>,
+    RawQuery(raw_query): RawQuery,
+    req: Request,
+) -> TelegramResult<Response> {
+    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
+    let ct = req
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let body_bytes = axum::body::to_bytes(req.into_body(), 100 * 1024 * 1024)
+        .await
+        .map_err(|e| TelegramError::Internal(format!("Failed reading request body: {e}")))?;
+
+    let test_url = format!("https://api.telegram.org/test/bot{clean_token}/{method}");
+    let mut req_builder = state.engine.client.post(&test_url);
+    if let Some(ref q) = raw_query {
+        req_builder = state.engine.client.post(format!("{test_url}?{q}"));
+    }
+    if let Some(ref c) = ct {
+        req_builder = req_builder.header(header::CONTENT_TYPE, c);
+    }
+    let resp = req_builder
+        .body(body_bytes)
+        .send()
+        .await
+        .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?;
+
+    let out = resp
+        .bytes()
+        .await
+        .map_err(|e| TelegramError::Internal(format!("Read error: {e}")))?;
+
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        out,
+    )
+        .into_response())
+}
+
+/// Handles any official Telegram Bot API GET method for the Test DC environment
+pub async fn generic_get_test_handler(
+    Path((token, method)): Path<(String, String)>,
+    State(state): State<AppState>,
+    Query(query_map): Query<HashMap<String, String>>,
+    RawQuery(raw_query): RawQuery,
+    req: Request,
+) -> TelegramResult<Response> {
+    generic_post_test_handler(
+        Path((token, method)),
+        State(state),
+        Query(query_map),
+        RawQuery(raw_query),
+        req,
+    )
+    .await
+}
+
+/// Fallback handler returning official Telegram Bot API 404 JSON for unknown routes/methods
+pub async fn fallback_404_handler() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        [(header::CONTENT_TYPE, "application/json")],
+        r#"{"ok":false,"error_code":404,"description":"Not Found: method not found"}"#,
+    )
+        .into_response()
+}
+
