@@ -21,6 +21,15 @@ pub struct StorageEngine {
     l1_files: DashMap<String, File>,
 }
 
+#[derive(Debug, Clone)]
+pub struct WebhookRecord {
+    pub url: String,
+    pub secret_token: Option<String>,
+    pub max_connections: i32,
+    pub allowed_updates: Option<Vec<String>>,
+    pub ip_address: Option<String>,
+}
+
 impl StorageEngine {
     /// Initializes the SQLite database in WAL mode with strict memory caps.
     pub fn new(db_dir: &Path) -> TelegramResult<Arc<Self>> {
@@ -99,11 +108,17 @@ impl StorageEngine {
                 url TEXT NOT NULL,
                 secret_token TEXT,
                 max_connections INTEGER NOT NULL DEFAULT 40,
+                allowed_updates TEXT,
+                ip_address TEXT,
                 updated_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_file_cache_updated ON file_cache(updated_at);",
         )
         .map_err(|e| TelegramError::Internal(format!("SQLite schema init error: {e}")))?;
+
+        // Ensure columns exist for upgraded databases
+        let _ = conn.execute("ALTER TABLE webhooks ADD COLUMN allowed_updates TEXT", []);
+        let _ = conn.execute("ALTER TABLE webhooks ADD COLUMN ip_address TEXT", []);
 
         Ok(())
     }
@@ -268,28 +283,71 @@ impl StorageEngine {
     }
 
     /// Saves webhook configuration in SQLite WAL.
-    pub async fn save_webhook(&self, token: &str, url: &str, secret_token: Option<&str>, max_conn: i32) {
+    pub async fn save_webhook(
+        &self,
+        token: &str,
+        url: &str,
+        secret_token: Option<&str>,
+        max_conn: i32,
+        allowed_updates: Option<&[String]>,
+        ip_address: Option<&str>,
+    ) {
         let writer = Arc::clone(&self.writer);
         let token_owned = token.to_string();
         let url_owned = url.to_string();
         let secret_owned = secret_token.map(|s| s.to_string());
+        let allowed_json = allowed_updates.and_then(|a| serde_json::to_string(a).ok());
+        let ip_owned = ip_address.map(|s| s.to_string());
         let now = Self::now_unix();
 
         let _ = tokio::task::spawn_blocking(move || {
             if let Ok(conn) = writer.lock() {
                 let _ = conn.execute(
-                    "INSERT INTO webhooks (token, url, secret_token, max_connections, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5)
+                    "INSERT INTO webhooks (token, url, secret_token, max_connections, allowed_updates, ip_address, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                      ON CONFLICT(token) DO UPDATE SET
                         url = excluded.url,
                         secret_token = excluded.secret_token,
                         max_connections = excluded.max_connections,
+                        allowed_updates = excluded.allowed_updates,
+                        ip_address = excluded.ip_address,
                         updated_at = excluded.updated_at",
-                    params![token_owned, url_owned, secret_owned, max_conn, now],
+                    params![token_owned, url_owned, secret_owned, max_conn, allowed_json, ip_owned, now],
                 );
             }
         })
         .await;
+    }
+
+    /// Retrieves webhook configuration for a specific bot from SQLite WAL.
+    pub async fn get_webhook(&self, token: &str) -> Option<WebhookRecord> {
+        let reader = self.next_reader();
+        let token_owned = token.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = reader.lock().ok()?;
+            let mut stmt = conn
+                .prepare_cached("SELECT url, secret_token, max_connections, allowed_updates, ip_address FROM webhooks WHERE token = ?1")
+                .ok()?;
+            stmt.query_row(params![token_owned], |row| {
+                let url: String = row.get(0)?;
+                let secret_token: Option<String> = row.get(1)?;
+                let max_connections: i32 = row.get(2)?;
+                let allowed_str: Option<String> = row.get(3)?;
+                let allowed_updates = allowed_str.and_then(|s| serde_json::from_str(&s).ok());
+                let ip_address: Option<String> = row.get(4)?;
+                Ok(WebhookRecord {
+                    url,
+                    secret_token,
+                    max_connections,
+                    allowed_updates,
+                    ip_address,
+                })
+            })
+            .ok()
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// Deletes webhook configuration from SQLite WAL.
@@ -305,15 +363,28 @@ impl StorageEngine {
         .await;
     }
 
-    /// Loads all saved `(token, url)` webhook pairs from SQLite WAL on startup.
-    pub async fn get_all_webhooks(&self) -> Vec<(String, String)> {
+    /// Loads all saved webhook records from SQLite WAL on startup.
+    pub async fn get_all_webhooks(&self) -> Vec<(String, WebhookRecord)> {
         let reader = Arc::clone(&self.readers[0]);
         tokio::task::spawn_blocking(move || {
             let mut out = Vec::new();
             if let Ok(conn) = reader.lock() {
-                if let Ok(mut stmt) = conn.prepare("SELECT token, url FROM webhooks") {
+                if let Ok(mut stmt) = conn.prepare("SELECT token, url, secret_token, max_connections, allowed_updates, ip_address FROM webhooks") {
                     if let Ok(rows) = stmt.query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        let token: String = row.get(0)?;
+                        let url: String = row.get(1)?;
+                        let secret_token: Option<String> = row.get(2)?;
+                        let max_connections: i32 = row.get(3)?;
+                        let allowed_str: Option<String> = row.get(4)?;
+                        let allowed_updates = allowed_str.and_then(|s| serde_json::from_str(&s).ok());
+                        let ip_address: Option<String> = row.get(5)?;
+                        Ok((token, WebhookRecord {
+                            url,
+                            secret_token,
+                            max_connections,
+                            allowed_updates,
+                            ip_address,
+                        }))
                     }) {
                         for r in rows.flatten() {
                             out.push(r);

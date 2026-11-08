@@ -192,7 +192,7 @@ impl TelegramEngine {
                 for (token, url) in pairs {
                     if !url.is_empty() {
                         self.storage
-                            .save_webhook(&token, &url, None, 100)
+                            .save_webhook(&token, &url, None, 100, None, None)
                             .await;
                     }
                 }
@@ -202,9 +202,15 @@ impl TelegramEngine {
         // 2. Load all persisted webhooks from SQLite WAL
         let saved = self.storage.get_all_webhooks().await;
         let count = saved.len();
-        for (token, url) in saved {
-            if !url.is_empty() {
-                self.start_webhook_worker(token, url);
+        for (token, record) in saved {
+            if !record.url.is_empty() {
+                self.start_webhook_worker(
+                    token,
+                    record.url,
+                    record.secret_token,
+                    record.allowed_updates,
+                    false,
+                );
             }
         }
         if count > 0 {
@@ -271,7 +277,14 @@ impl TelegramEngine {
     }
 
     /// Starts or replaces a background long-polling -> local webhook delivery worker for a bot
-    pub fn start_webhook_worker(self: &Arc<Self>, token: String, webhook_url: String) {
+    pub fn start_webhook_worker(
+        self: &Arc<Self>,
+        token: String,
+        webhook_url: String,
+        secret_token: Option<String>,
+        allowed_updates: Option<Vec<String>>,
+        drop_pending_updates: bool,
+    ) {
         self.stop_webhook_worker(&token);
         if webhook_url.is_empty() {
             return;
@@ -284,39 +297,38 @@ impl TelegramEngine {
             let sem = Arc::new(Semaphore::new(100));
             let mut next_offset: i64 = 0;
 
-            // 1. Initial sync: skip already-processed historical updates using offset=-1&limit=1&timeout=0
-            let init_url = format!(
-                "{}/bot{}/getUpdates?offset=-1&limit=1&timeout=0",
-                engine.upstream_base_url, tok_clone
-            );
-            if let Ok(resp) = engine.client.get(&init_url).send().await {
-                if let Ok(json) = resp.json::<Value>().await {
-                    if let Some(arr) = json.get("result").and_then(|v| v.as_array()) {
-                        if let Some(last) = arr.last() {
-                            if let Some(uid) = last.get("update_id").and_then(|v| v.as_i64()) {
-                                next_offset = uid + 1;
+            // 1. Initial sync: if drop_pending_updates is requested, skip historical updates
+            if drop_pending_updates {
+                let init_url = format!(
+                    "{}/bot{}/getUpdates?offset=-1&limit=1&timeout=0",
+                    engine.upstream_base_url, tok_clone
+                );
+                if let Ok(resp) = engine.client.get(&init_url).send().await {
+                    if let Ok(json) = resp.json::<Value>().await {
+                        if let Some(arr) = json.get("result").and_then(|v| v.as_array()) {
+                            if let Some(last) = arr.last() {
+                                if let Some(uid) = last.get("update_id").and_then(|v| v.as_i64()) {
+                                    next_offset = uid + 1;
+                                }
                             }
                         }
                     }
                 }
             }
 
-            let allowed_val: Value = serde_json::from_str(
-                r#"["message","edited_message","callback_query","inline_query","message_reaction","channel_post","edited_channel_post","my_chat_member","chat_member","chat_join_request"]"#,
-            )
-            .unwrap_or(Value::Null);
-
             loop {
                 let poll_url = format!(
                     "{}/bot{}/getUpdates",
                     engine.upstream_base_url, tok_clone
                 );
-                let body = serde_json::json!({
+                let mut body = serde_json::json!({
                     "offset": next_offset,
                     "limit": 100,
                     "timeout": 20,
-                    "allowed_updates": allowed_val,
                 });
+                if let Some(ref allowed) = allowed_updates {
+                    body["allowed_updates"] = serde_json::to_value(allowed).unwrap_or(Value::Null);
+                }
 
                 match engine.client.post(&poll_url).json(&body).send().await {
                     Ok(resp) => {
@@ -332,16 +344,18 @@ impl TelegramEngine {
                                         let update_bytes = serde_json::to_vec(update).unwrap_or_default();
                                         let wh_client = engine.webhook_client.clone();
                                         let wh_url = webhook_url.clone();
+                                        let secret_clone = secret_token.clone();
                                         let sem_clone = Arc::clone(&sem);
 
                                         tokio::spawn(async move {
                                             let _permit = sem_clone.acquire().await;
-                                            let _ = wh_client
+                                            let mut req = wh_client
                                                 .post(&wh_url)
-                                                .header("content-type", "application/json")
-                                                .body(update_bytes)
-                                                .send()
-                                                .await;
+                                                .header("content-type", "application/json");
+                                            if let Some(ref sec) = secret_clone {
+                                                req = req.header("X-Telegram-Bot-Api-Secret-Token", sec);
+                                            }
+                                            let _ = req.body(update_bytes).send().await;
                                         });
                                     }
                                 }
@@ -1013,16 +1027,31 @@ impl TelegramEngine {
         if is_local_url {
             // Ensure cloud webhook is deleted so local getUpdates worker can receive updates
             let del_url = format!("{}/bot{token}/deleteWebhook", self.upstream_base_url);
-            let _ = self.client.post(&del_url).send().await;
+            let drop_param = if req.drop_pending_updates.unwrap_or(false) {
+                "?drop_pending_updates=true"
+            } else {
+                ""
+            };
+            let _ = self.client.post(format!("{}{}", del_url, drop_param)).send().await;
+
             self.storage
                 .save_webhook(
                     token,
                     &req.url,
                     req.secret_token.as_deref(),
                     req.max_connections.unwrap_or(100),
+                    req.allowed_updates.as_deref(),
+                    req.ip_address.as_deref(),
                 )
                 .await;
-            self.start_webhook_worker(token.to_string(), req.url.clone());
+
+            self.start_webhook_worker(
+                token.to_string(),
+                req.url.clone(),
+                req.secret_token.clone(),
+                req.allowed_updates.clone(),
+                req.drop_pending_updates.unwrap_or(false),
+            );
             return Ok(true);
         }
 
@@ -1051,6 +1080,8 @@ impl TelegramEngine {
                     &req.url,
                     req.secret_token.as_deref(),
                     req.max_connections.unwrap_or(40),
+                    req.allowed_updates.as_deref(),
+                    req.ip_address.as_deref(),
                 )
                 .await;
         }
@@ -1078,6 +1109,22 @@ impl TelegramEngine {
 
     /// Execute getWebhookInfo
     pub async fn get_webhook_info(&self, token: &str) -> TelegramResult<WebhookInfo> {
+        if let Some(wh) = self.storage.get_webhook(token).await {
+            if !wh.url.is_empty() {
+                return Ok(WebhookInfo {
+                    url: wh.url,
+                    has_custom_certificate: false,
+                    pending_update_count: 0,
+                    ip_address: wh.ip_address,
+                    last_error_date: None,
+                    last_error_message: None,
+                    last_synchronization_error_date: None,
+                    max_connections: Some(wh.max_connections),
+                    allowed_updates: wh.allowed_updates,
+                });
+            }
+        }
+
         let url = format!("{}/bot{token}/getWebhookInfo", self.upstream_base_url);
         let resp: ApiResponse<WebhookInfo> = self
             .client
@@ -1172,25 +1219,52 @@ impl TelegramEngine {
         // 1. Handle setWebhook / deleteWebhook / getWebhookInfo / getFile specially
         if method_lower == "setwebhook" {
             let mut url_val = query_map.get("url").cloned().unwrap_or_default();
-            let max_conn = query_map
+            let mut ip_address = query_map.get("ip_address").cloned();
+            let mut max_conn = query_map
                 .get("max_connections")
-                .and_then(|v| v.parse::<i32>().ok())
-                .or(Some(100));
+                .and_then(|v| v.parse::<i32>().ok());
+            let mut secret_token = query_map.get("secret_token").cloned();
+            let mut drop_pending_updates = query_map
+                .get("drop_pending_updates")
+                .and_then(|v| v.parse::<bool>().ok());
+            let mut allowed_updates: Option<Vec<String>> = query_map
+                .get("allowed_updates")
+                .and_then(|s| serde_json::from_str(s).ok());
 
-            if url_val.is_empty() && !body_bytes.is_empty() {
+            if !body_bytes.is_empty() {
                 if let Ok(json) = serde_json::from_slice::<Value>(&body_bytes) {
                     if let Some(u) = json.get("url").and_then(|v| v.as_str()) {
                         url_val = u.to_string();
                     }
+                    if let Some(ip) = json.get("ip_address").and_then(|v| v.as_str()) {
+                        ip_address = Some(ip.to_string());
+                    }
+                    if let Some(mc) = json.get("max_connections").and_then(|v| v.as_i64()) {
+                        max_conn = Some(mc as i32);
+                    }
+                    if let Some(sec) = json.get("secret_token").and_then(|v| v.as_str()) {
+                        secret_token = Some(sec.to_string());
+                    }
+                    if let Some(drop) = json.get("drop_pending_updates").and_then(|v| v.as_bool()) {
+                        drop_pending_updates = Some(drop);
+                    }
+                    if let Some(arr) = json.get("allowed_updates").and_then(|v| v.as_array()) {
+                        let parsed: Vec<String> = arr
+                            .iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect();
+                        allowed_updates = Some(parsed);
+                    }
                 }
             }
+
             let req = SetWebhookRequest {
                 url: url_val,
-                ip_address: None,
-                max_connections: max_conn,
-                allowed_updates: None,
-                drop_pending_updates: None,
-                secret_token: None,
+                ip_address,
+                max_connections: max_conn.or(Some(100)),
+                allowed_updates,
+                drop_pending_updates,
+                secret_token,
             };
             let _ = self.set_webhook(token, &req).await?;
             return Ok(Bytes::from_static(
