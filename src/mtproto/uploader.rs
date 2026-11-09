@@ -42,7 +42,8 @@ fn auth_cache() -> &'static DashMap<String, CachedBotAuth> {
 
 /// Clears cached MTProto authorization when a bot closes or logs out
 pub fn invalidate_bot_auth(token: &str) {
-    auth_cache().remove(token);
+    let prefix = format!("{token}:");
+    auth_cache().retain(|k, _| !k.starts_with(&prefix) && k != token);
 }
 
 /// Production DC addresses (from td/telegram/net/ConnectionCreator.cpp)
@@ -126,7 +127,8 @@ impl MtProtoConnection {
         api_hash: &str,
         bot_token: &str,
     ) -> Result<Self, Error> {
-        if let Some(cached) = auth_cache().get(bot_token).map(|r| *r.value()) {
+        let cache_key = format!("{bot_token}:{initial_dc}");
+        if let Some(cached) = auth_cache().get(&cache_key).map(|r| *r.value()) {
             if let Ok(conn) = Self::connect_with_auth(cached, api_id).await {
                 return Ok(conn);
             }
@@ -139,8 +141,9 @@ impl MtProtoConnection {
             conn.inited_connection = true;
             match conn.rpc_call(&auth_query).await {
                 Ok(_resp) => {
+                    let cache_key = format!("{bot_token}:{}", conn.dc_id);
                     auth_cache().insert(
-                        bot_token.to_string(),
+                        cache_key,
                         CachedBotAuth {
                             dc_id: conn.dc_id,
                             auth_key: *conn.session.auth_key(),
@@ -170,7 +173,7 @@ impl MtProtoConnection {
         ))
     }
 
-    fn parse_migrate_dc(err_msg: &str) -> Option<i32> {
+    pub fn parse_migrate_dc(err_msg: &str) -> Option<i32> {
         for prefix in ["USER_MIGRATE_", "FILE_MIGRATE_", "PHONE_MIGRATE_", "NETWORK_MIGRATE_"] {
             if let Some(idx) = err_msg.find(prefix) {
                 let rest = &err_msg[idx + prefix.len()..];
@@ -183,7 +186,7 @@ impl MtProtoConnection {
         None
     }
 
-    fn parse_flood_wait(err_msg: &str) -> Option<u64> {
+    pub fn parse_flood_wait(err_msg: &str) -> Option<u64> {
         if let Some(idx) = err_msg.find("FLOOD_WAIT_") {
             let rest = &err_msg[idx + "FLOOD_WAIT_".len()..];
             let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -743,7 +746,8 @@ pub async fn upload_and_send_large_file(
         server_salt: main_conn.session.server_salt,
         time_offset: main_conn.session.time_offset,
     };
-    auth_cache().insert(bot_token.to_string(), shared_auth);
+    let cache_key = format!("{bot_token}:{home_dc}");
+    auth_cache().insert(cache_key, shared_auth);
     drop(main_conn);
 
     // 3. Calculate 512 KB part layout (translated from FileUploader.cpp)

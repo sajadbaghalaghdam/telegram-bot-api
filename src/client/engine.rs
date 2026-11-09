@@ -944,6 +944,31 @@ impl TelegramEngine {
             .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
 
         if !resp.ok {
+            let desc = resp.description.as_deref().unwrap_or("");
+            if self.local_mode && (desc.to_ascii_lowercase().contains("too big") || desc.contains("file is too big")) {
+                let bot_folder = Self::bot_dir_name(token);
+                let target_dir = self.dir.join(bot_folder);
+                let (target_file, total_bytes) = crate::mtproto::download_large_file_via_mtproto(
+                    self.api_id,
+                    &self.api_hash,
+                    token,
+                    &req.file_id,
+                    &target_dir,
+                )
+                .await
+                .map_err(|e| TelegramError::BadRequest(format!("MTProto download failed: {e}")))?;
+
+                let unique_id = format!("AgAD{:x}", req.file_id.len());
+                let file = File {
+                    file_id: req.file_id.clone(),
+                    file_unique_id: unique_id,
+                    file_size: Some(total_bytes as i64),
+                    file_path: Some(target_file.to_string_lossy().to_string()),
+                };
+                self.storage.save_cached_file(&file).await;
+                return Ok(file);
+            }
+
             return Err(TelegramError::ApiError {
                 code: resp.error_code.unwrap_or(400),
                 description: resp.description.unwrap_or_else(|| "File not found".to_string()),
