@@ -100,7 +100,10 @@ pub fn unpack_encrypted_message(
 
     let (aes_key, aes_iv) = derive_keys(auth_key, &msg_key, false);
 
-    let encrypted_part = &packet[24..packet.len() - (packet.len() - 24) % 16];
+    if (packet.len() - 24) % 16 != 0 {
+        return Err(PacketError::InvalidPayloadLength);
+    }
+    let encrypted_part = &packet[24..];
     let plaintext = aes_256_ige_decrypt(encrypted_part, &aes_key, &aes_iv)
         .map_err(|e| PacketError::Crypto(e.to_string()))?;
 

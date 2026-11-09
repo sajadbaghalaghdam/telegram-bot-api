@@ -65,6 +65,7 @@ pub async fn generic_post_handler(
         let mut chat_id_str = query_map.get("chat_id").cloned().unwrap_or_default();
         let mut caption = query_map.get("caption").cloned().unwrap_or_default();
         let mut orig_file_name: Option<String> = None;
+        let mut extra_fields = serde_json::Map::new();
         let mut has_temp_file = false;
 
         while let Some(mut field) = multipart
@@ -99,6 +100,14 @@ pub async fn generic_post_handler(
                 if let Ok(txt) = field.text().await {
                     caption = txt;
                 }
+            } else if !name.is_empty() {
+                if let Ok(txt) = field.text().await {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&txt) {
+                        extra_fields.insert(name, val);
+                    } else {
+                        extra_fields.insert(name, serde_json::Value::String(txt));
+                    }
+                }
             }
         }
 
@@ -107,10 +116,12 @@ pub async fn generic_post_handler(
                 .engine
                 .upload_local_file_mtproto(
                     clean_token,
+                    &method,
                     &chat_id_str,
                     &temp_path,
                     &caption,
                     orig_file_name.as_deref(),
+                    Some(&extra_fields),
                 )
                 .await;
             let _ = tokio::fs::remove_file(&temp_path).await;
@@ -137,12 +148,36 @@ pub async fn generic_post_handler(
         .universal_call(clean_token, &method, &query_map, q_str, ct.as_deref(), body)
         .await?;
 
-    Ok((
-        StatusCode::OK,
+    let (status, retry_after) = if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out) {
+        if json.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+            let code = json.get("error_code").and_then(|v| v.as_u64()).unwrap_or(400) as u16;
+            let st = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST);
+            let ra = json
+                .get("parameters")
+                .and_then(|p| p.get("retry_after"))
+                .and_then(|v| v.as_i64());
+            (st, ra)
+        } else {
+            (StatusCode::OK, None)
+        }
+    } else {
+        (StatusCode::OK, None)
+    };
+
+    let mut resp = (
+        status,
         [(header::CONTENT_TYPE, "application/json")],
         out,
     )
-        .into_response())
+        .into_response();
+
+    if let Some(ra) = retry_after {
+        if let Ok(val) = ra.to_string().parse() {
+            resp.headers_mut().insert(header::RETRY_AFTER, val);
+        }
+    }
+
+    Ok(resp)
 }
 
 /// Handles any official Telegram Bot API GET method dynamically

@@ -160,11 +160,19 @@ impl TelegramEngine {
             if let Some((id_str, _)) = token.split_once(':') {
                 if let Ok(bot_id) = id_str.parse::<u64>() {
                     if bot_id % modulo != rem {
-                        return Err(TelegramError::NotFound(
-                            "Bot is filtered out by --filter option".to_string(),
+                        return Err(TelegramError::MisdirectedRequest(
+                            "forbidden token specified".to_string(),
                         ));
                     }
+                } else {
+                    return Err(TelegramError::Unauthorized(
+                        "invalid token specified".to_string(),
+                    ));
                 }
+            } else {
+                return Err(TelegramError::Unauthorized(
+                    "invalid token specified".to_string(),
+                ));
             }
         }
         Ok(())
@@ -431,10 +439,12 @@ impl TelegramEngine {
     pub async fn upload_local_file_mtproto(
         &self,
         token: &str,
+        method: &str,
         chat_id_str: &str,
         local_path: &Path,
         caption: &str,
         custom_file_name: Option<&str>,
+        extra_fields: Option<&serde_json::Map<String, Value>>,
     ) -> TelegramResult<Bytes> {
         if self.api_id <= 0 || self.api_hash.is_empty() {
             return Err(TelegramError::Internal(
@@ -496,12 +506,27 @@ impl TelegramEngine {
             })
             .await;
 
-        // 4. Build standard Bot API Message JSON response
+        // 4. Build standard Bot API Message JSON response matching requested method
+        let m_lower = method.to_ascii_lowercase();
+        let media_field = if m_lower.contains("video") {
+            "video"
+        } else if m_lower.contains("photo") {
+            "photo"
+        } else if m_lower.contains("audio") {
+            "audio"
+        } else if m_lower.contains("voice") {
+            "voice"
+        } else if m_lower.contains("animation") {
+            "animation"
+        } else {
+            "document"
+        };
+
         let mut msg_obj = serde_json::json!({
             "message_id": uploaded.message_id,
             "chat": chat_json,
             "date": uploaded.date,
-            "document": {
+            media_field: {
                 "file_name": uploaded.file_name,
                 "mime_type": uploaded.mime_type,
                 "file_id": file_id_str,
@@ -518,6 +543,13 @@ impl TelegramEngine {
         if !caption.is_empty() {
             msg_obj["caption"] = Value::String(caption.to_string());
         }
+        if let Some(extras) = extra_fields {
+            for (k, v) in extras.iter() {
+                if k != "chat_id" && k != "caption" && !k.starts_with("file") {
+                    msg_obj[k] = v.clone();
+                }
+            }
+        }
 
         let full_resp = serde_json::json!({
             "ok": true,
@@ -533,6 +565,7 @@ impl TelegramEngine {
     pub async fn maybe_upload_large_remote_url_mtproto(
         &self,
         token: &str,
+        method: &str,
         chat_id_str: &str,
         remote_url: &str,
         caption: &str,
@@ -595,10 +628,12 @@ impl TelegramEngine {
         let res = self
             .upload_local_file_mtproto(
                 token,
+                method,
                 chat_id_str,
                 &temp_path,
                 caption,
                 Some(&url_file_name),
+                None,
             )
             .await;
         let _ = fs::remove_file(&temp_path).await;
@@ -921,10 +956,19 @@ impl TelegramEngine {
 
     /// Execute getFile with SQLite WAL lookup and chunked disk write in local mode
     pub async fn get_file(&self, token: &str, req: &GetFileRequest) -> TelegramResult<File> {
+        if req.file_id.is_empty() {
+            return Err(TelegramError::BadRequest("file_id not specified".to_string()));
+        }
+
         if self.local_mode {
             if let Some(cached) = self.storage.get_cached_file(&req.file_id).await {
                 if let Some(ref p) = cached.file_path {
-                    if Path::new(p).exists() {
+                    let check_path = if Path::new(p).is_absolute() {
+                        PathBuf::from(p)
+                    } else {
+                        self.dir.join(p)
+                    };
+                    if check_path.exists() {
                         return Ok(cached);
                     }
                 }
@@ -947,15 +991,10 @@ impl TelegramEngine {
             let desc = resp.description.as_deref().unwrap_or("");
             let desc_lower = desc.to_ascii_lowercase();
             if self.local_mode
-                && (desc_lower.contains("too big")
-                    || desc_lower.contains("file is too big")
-                    || desc_lower.contains("file_id not specified")
-                    || desc_lower.contains("wrong file identifier")
-                    || desc_lower.contains("not found")
-                    || resp.error_code == Some(400))
+                && (desc_lower.contains("too big") || desc_lower.contains("file is too big"))
             {
                 let bot_folder = Self::bot_dir_name(token);
-                let target_dir = self.dir.join(bot_folder);
+                let target_dir = self.dir.join(&bot_folder);
                 let (target_file, total_bytes) = crate::mtproto::download_large_file_via_mtproto(
                     self.api_id,
                     &self.api_hash,
@@ -966,12 +1005,17 @@ impl TelegramEngine {
                 .await
                 .map_err(|e| TelegramError::BadRequest(format!("MTProto download failed: {e}")))?;
 
+                let rel_path = target_file
+                    .strip_prefix(&self.dir)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| target_file.to_string_lossy().replace('\\', "/"));
+
                 let unique_id = format!("AgAD{:x}", req.file_id.len());
                 let file = File {
                     file_id: req.file_id.clone(),
                     file_unique_id: unique_id,
                     file_size: Some(total_bytes as i64),
-                    file_path: Some(target_file.to_string_lossy().to_string()),
+                    file_path: Some(rel_path),
                 };
                 self.storage.save_cached_file(&file).await;
                 return Ok(file);
@@ -1028,7 +1072,11 @@ impl TelegramEngine {
                 }
 
                 if target_file.exists() {
-                    file.file_path = Some(target_file.to_string_lossy().to_string());
+                    let rel_path = target_file
+                        .strip_prefix(&self.dir)
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_else(|_| target_file.to_string_lossy().replace('\\', "/"));
+                    file.file_path = Some(rel_path);
                     self.storage.save_cached_file(&file).await;
                 }
             }
@@ -1043,6 +1091,12 @@ impl TelegramEngine {
         token: &str,
         req: &GetUpdatesRequest,
     ) -> TelegramResult<Vec<Update>> {
+        if self.webhook_workers.contains_key(token) {
+            return Err(TelegramError::Conflict(
+                "can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first".to_string(),
+            ));
+        }
+
         let url = format!("{}/bot{token}/getUpdates", self.upstream_base_url);
         let resp: ApiResponse<Vec<Update>> = self
             .client
@@ -1055,10 +1109,16 @@ impl TelegramEngine {
             .await
             .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
 
+        if !resp.ok {
+            return Err(TelegramError::ApiError {
+                code: resp.error_code.unwrap_or(400),
+                description: resp.description.unwrap_or_else(|| "Unknown error".to_string()),
+                parameters: resp.parameters,
+            });
+        }
+
         resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-            )
+            TelegramError::BadRequest("Unknown error".to_string())
         })
     }
 
@@ -1068,11 +1128,19 @@ impl TelegramEngine {
         token: &str,
         req: &SetWebhookRequest,
     ) -> TelegramResult<bool> {
-        let is_local_url = req.url.starts_with("http://127.0.0.1")
-            || req.url.starts_with("http://localhost")
-            || req.url.starts_with("http://10.")
-            || req.url.starts_with("http://192.168.")
-            || req.url.starts_with("http://");
+        if !req.url.is_empty() && !req.url.starts_with("http://") && !req.url.starts_with("https://") {
+            return Err(TelegramError::BadRequest(
+                "Bad Request: unsupported URL protocol".to_string(),
+            ));
+        }
+
+        let is_local_url = self.local_mode
+            && (req.url.starts_with("http://127.0.0.1")
+                || req.url.starts_with("http://localhost")
+                || req.url.starts_with("http://[::1]")
+                || req.url.starts_with("http://10.")
+                || req.url.starts_with("http://192.168.")
+                || (16..=31).any(|b| req.url.starts_with(&format!("http://172.{b}."))));
 
         if is_local_url {
             // Ensure cloud webhook is deleted so local getUpdates worker can receive updates
@@ -1598,7 +1666,7 @@ impl TelegramEngine {
                                 .or_else(|| query_map.get("caption").map(|s| s.as_str()))
                                 .unwrap_or("");
                             if let Some(res) = self
-                                .maybe_upload_large_remote_url_mtproto(token, &chat_id_str, s, caption)
+                                .maybe_upload_large_remote_url_mtproto(token, method, &chat_id_str, s, caption)
                                 .await
                             {
                                 return res;
@@ -1629,7 +1697,15 @@ impl TelegramEngine {
                             .or_else(|| query_map.get("caption").map(|s| s.as_str()))
                             .unwrap_or("");
                         return self
-                            .upload_local_file_mtproto(token, &chat_id_str, &local_path, caption, None)
+                            .upload_local_file_mtproto(
+                                token,
+                                method,
+                                &chat_id_str,
+                                &local_path,
+                                caption,
+                                None,
+                                Some(&map),
+                            )
                             .await;
                     }
 
@@ -1676,12 +1752,20 @@ impl TelegramEngine {
                             .unwrap_or(0);
                         if file_len > 49 * 1024 * 1024 {
                             return self
-                                .upload_local_file_mtproto(token, &chat_id_str, &local_path, caption, None)
+                                .upload_local_file_mtproto(
+                                    token,
+                                    method,
+                                    &chat_id_str,
+                                    &local_path,
+                                    caption,
+                                    None,
+                                    None,
+                                )
                                 .await;
                         }
                     } else if val.starts_with("http://") || val.starts_with("https://") {
                         if let Some(res) = self
-                            .maybe_upload_large_remote_url_mtproto(token, &chat_id_str, val, caption)
+                            .maybe_upload_large_remote_url_mtproto(token, method, &chat_id_str, val, caption)
                             .await
                         {
                             return res;

@@ -24,6 +24,13 @@ impl IntermediateTransport {
     pub async fn send_packet(&mut self, payload: &[u8]) -> Result<(), Error> {
         let len = payload.len() as u32;
 
+        if payload.len() > Self::MAX_PACKET_SIZE {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Packet size {} exceeds maximum allowed size {}", payload.len(), Self::MAX_PACKET_SIZE),
+            ));
+        }
+
         if payload.len() <= 4096 {
             let mut buf = [0u8; 4096 + Self::HEADER_SIZE];
             buf[0..4].copy_from_slice(&len.to_le_bytes());
@@ -45,10 +52,15 @@ impl IntermediateTransport {
         let len = u32::from_le_bytes(len_buf) as usize;
 
         if len == 0 {
-            return Ok(0);
+            buf.clear();
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "Zero-length MTProto packet received",
+            ));
         }
 
         if len > Self::MAX_PACKET_SIZE {
+            buf.clear();
             return Err(Error::new(
                 ErrorKind::InvalidData,
                 format!("Packet size {} exceeds maximum allowed size {}", len, Self::MAX_PACKET_SIZE),

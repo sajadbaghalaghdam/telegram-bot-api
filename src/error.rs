@@ -29,6 +29,12 @@ pub enum TelegramError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
+    #[error("Misdirected Request: {0}")]
+    MisdirectedRequest(String),
+
     #[error("Internal Server Error: {0}")]
     Internal(String),
 
@@ -43,6 +49,15 @@ pub enum TelegramError {
     },
 }
 
+fn format_error_prefix(prefix: &str, msg: &str) -> String {
+    let needle = format!("{prefix}: ");
+    if msg.starts_with(&needle) {
+        msg.to_string()
+    } else {
+        format!("{prefix}: {msg}")
+    }
+}
+
 impl TelegramError {
     /// Maps the internal error variant to the corresponding HTTP status code.
     fn status_code(&self) -> StatusCode {
@@ -50,6 +65,8 @@ impl TelegramError {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::MisdirectedRequest(_) => StatusCode::MISDIRECTED_REQUEST,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::MtProto(_) => StatusCode::BAD_GATEWAY,
             Self::ApiError { code, .. } => {
@@ -69,17 +86,31 @@ impl IntoResponse for TelegramError {
                 parameters,
                 ..
             } => (description, parameters),
-            other => (other.to_string(), None),
+            Self::NotFound(msg) => (format_error_prefix("Not Found", &msg), None),
+            Self::BadRequest(msg) => (format_error_prefix("Bad Request", &msg), None),
+            Self::Unauthorized(msg) => (format_error_prefix("Unauthorized", &msg), None),
+            Self::Conflict(msg) => (format_error_prefix("Conflict", &msg), None),
+            Self::MisdirectedRequest(msg) => (format_error_prefix("Misdirected Request", &msg), None),
+            Self::Internal(msg) => (format_error_prefix("Internal Server Error", &msg), None),
+            Self::MtProto(msg) => (format_error_prefix("Bad Gateway", &msg), None),
         };
 
         let body = TelegramErrorResponse {
             ok: false,
             error_code: status.as_u16(),
             description: desc,
-            parameters: params,
+            parameters: params.clone(),
         };
 
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if let Some(ref p) = params {
+            if let Some(retry_after) = p.retry_after {
+                if let Ok(val) = retry_after.to_string().parse() {
+                    response.headers_mut().insert(axum::http::header::RETRY_AFTER, val);
+                }
+            }
+        }
+        response
     }
 }
 
@@ -106,5 +137,20 @@ mod tests {
             json,
             r#"{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 10","parameters":{"retry_after":10}}"#
         );
+    }
+
+    #[test]
+    fn test_error_prefix_no_duplicate() {
+        let err1 = TelegramError::BadRequest("Bad Request: file is too big".to_string());
+        let resp1 = err1.into_response();
+        assert_eq!(resp1.status(), StatusCode::BAD_REQUEST);
+
+        let err2 = TelegramError::Conflict("webhook already active".to_string());
+        let resp2 = err2.into_response();
+        assert_eq!(resp2.status(), StatusCode::CONFLICT);
+
+        let err3 = TelegramError::MisdirectedRequest("forbidden token specified".to_string());
+        let resp3 = err3.into_response();
+        assert_eq!(resp3.status(), StatusCode::MISDIRECTED_REQUEST);
     }
 }
