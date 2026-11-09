@@ -26,7 +26,7 @@ use crate::watchdog::Watchdog;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure glibc allocator BEFORE spawning any Tokio threads so thread arenas stay strictly bounded
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     unsafe {
         unsafe extern "C" {
             fn mallopt(param: i32, value: i32) -> i32;
@@ -82,7 +82,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let effective_files_dir = config.files_dir.as_deref().unwrap_or(&config.dir);
 
     tracing::info!(
-        "Starting Telegram Bot API Server v9.5 on {} (Local mode: {}, Dir: {}, Files Dir: {})",
+        "Starting Telegram Bot API Server v{} on {} (Local mode: {}, Dir: {}, Files Dir: {})",
+        env!("CARGO_PKG_VERSION"),
         addr,
         config.local_mode,
         config.dir,

@@ -1,0 +1,18 @@
+[Unit]
+Description=Telegram Bot API Server (Pure Rust)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/lib/telegram-bot-api
+ExecStart=/usr/local/bin/telegram-bot-api --api-id=YOUR_API_ID --api-hash=YOUR_API_HASH --http-port=8080 --dir=/var/lib/telegram-bot-api --local
+Restart=always
+RestartSec=2s
+KillSignal=SIGKILL
+FinalKillSignal=SIGKILL
+TimeoutStopSec=5s
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 unsafe extern "C" {
     fn malloc_trim(pad: usize) -> i32;
 }
@@ -59,7 +59,7 @@ impl Watchdog {
                 self.last_kick_time.store(now, Ordering::Relaxed);
 
                 // Proactively release unused heap pages back to the Linux kernel (MADV_DONTNEED)
-                #[cfg(target_os = "linux")]
+                #[cfg(all(target_os = "linux", target_env = "gnu"))]
                 unsafe {
                     let _ = malloc_trim(0);
                 }

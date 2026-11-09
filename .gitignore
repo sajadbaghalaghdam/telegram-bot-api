@@ -14,6 +14,12 @@ temp/
 .env
 .env.*
 
+# Release staging
+dist/
+upload_release.py
+*.tar.gz
+cargo-config.toml
+
 # Python caches
 __pycache__/
 *.pyc
