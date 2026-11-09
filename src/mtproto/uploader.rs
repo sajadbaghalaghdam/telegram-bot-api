@@ -119,21 +119,21 @@ impl MtProtoConnection {
         })
     }
 
+    /// Removes cached MTProto authorization for a specific bot and DC
+    pub fn invalidate_cached_auth(bot_token: &str, dc_id: i32) {
+        let key = format!("{bot_token}:{dc_id}");
+        auth_cache().remove(&key);
+    }
+
     /// Connects to Telegram and authorizes the bot via `invokeWithLayer(initConnection(auth.importBotAuthorization))`
-    /// with automatic DC migration (`USER_MIGRATE_X` / `FILE_MIGRATE_X`) and in-memory `auth_key` caching.
-    pub async fn connect_and_authorize(
+    /// bypassing in-memory cache to ensure a fresh session and handshake.
+    pub async fn connect_and_authorize_fresh(
         initial_dc: i32,
         api_id: i32,
         api_hash: &str,
         bot_token: &str,
     ) -> Result<Self, Error> {
-        let cache_key = format!("{bot_token}:{initial_dc}");
-        if let Some(cached) = auth_cache().get(&cache_key).map(|r| *r.value()) {
-            if let Ok(conn) = Self::connect_with_auth(cached, api_id).await {
-                return Ok(conn);
-            }
-        }
-
+        Self::invalidate_cached_auth(bot_token, initial_dc);
         let mut dc_id = initial_dc;
         for _attempt in 0..5 {
             let mut conn = Self::connect(dc_id, api_id).await?;
@@ -155,6 +155,7 @@ impl MtProtoConnection {
                 }
                 Err(e) => {
                     let msg = e.to_string();
+                    tracing::warn!("[auth] importBotAuthorization on dc={} failed: {}", dc_id, msg);
                     if let Some(target_dc) = Self::parse_migrate_dc(&msg) {
                         dc_id = target_dc;
                         continue;
@@ -171,6 +172,24 @@ impl MtProtoConnection {
             ErrorKind::Other,
             "Exceeded maximum attempts during bot authorization",
         ))
+    }
+
+    /// Connects to Telegram and authorizes the bot via `invokeWithLayer(initConnection(auth.importBotAuthorization))`
+    /// with automatic DC migration (`USER_MIGRATE_X` / `FILE_MIGRATE_X`) and in-memory `auth_key` caching.
+    pub async fn connect_and_authorize(
+        initial_dc: i32,
+        api_id: i32,
+        api_hash: &str,
+        bot_token: &str,
+    ) -> Result<Self, Error> {
+        let cache_key = format!("{bot_token}:{initial_dc}");
+        if let Some(cached) = auth_cache().get(&cache_key).map(|r| *r.value()) {
+            if let Ok(conn) = Self::connect_with_auth(cached, api_id).await {
+                return Ok(conn);
+            }
+        }
+
+        Self::connect_and_authorize_fresh(initial_dc, api_id, api_hash, bot_token).await
     }
 
     pub fn parse_migrate_dc(err_msg: &str) -> Option<i32> {
@@ -281,6 +300,7 @@ impl MtProtoConnection {
                         Err(e) => {
                             let msg = e.to_string();
                             if let Some(wait_secs) = Self::parse_flood_wait(&msg) {
+                                tracing::warn!("[rpc] dc={} {} -> sleeping {}s", self.dc_id, msg, wait_secs);
                                 tokio::time::sleep(Duration::from_secs(wait_secs.max(1))).await;
                                 req_msg_id = self.send_encrypted(&effective_query, true).await?;
                                 break;

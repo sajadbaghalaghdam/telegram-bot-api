@@ -235,22 +235,34 @@ pub async fn download_large_file_via_mtproto(
     }
 
     // 1. Connect and authorize bot to the target DC where the file resides
+    tracing::info!("[dl] start file_type={} dc={} doc_id={}", loc.file_type, loc.dc_id, loc.doc_id);
+    let t_start = std::time::Instant::now();
     let mut main_conn = MtProtoConnection::connect_and_authorize(loc.dc_id, api_id, api_hash, bot_token).await?;
+    tracing::info!("[dl] authorized on dc={} in {:?}", main_conn.dc_id, t_start.elapsed());
 
     // 2. Fetch the first 512 KB chunk (part 0, offset 0) on the primary connection.
     // This immediately handles any DC migration (FILE_MIGRATE_X) and verifies authentication.
     let q0 = build_get_file_query(&loc, 0, CHUNK_SIZE as i32);
+    let mut refreshed_auth = false;
     let resp0 = loop {
         match main_conn.rpc_call(&q0).await {
             Ok(r) => break r,
             Err(e) => {
                 let err_msg = e.to_string();
+                tracing::warn!("[dl] chunk0 error on dc={}: {}", main_conn.dc_id, err_msg);
                 if let Some(target_dc) = MtProtoConnection::parse_migrate_dc(&err_msg) {
                     main_conn = MtProtoConnection::connect_and_authorize(target_dc, api_id, api_hash, bot_token).await?;
                     continue;
                 }
                 if let Some(wait_secs) = MtProtoConnection::parse_flood_wait(&err_msg) {
                     tokio::time::sleep(std::time::Duration::from_secs(wait_secs.max(1))).await;
+                    continue;
+                }
+                // If cached auth failed or dropped connection, refresh authorization once
+                if !refreshed_auth && (err_msg.contains("early eof") || err_msg.contains("TransportError") || err_msg.contains("AUTH_KEY")) {
+                    refreshed_auth = true;
+                    tracing::info!("[dl] refreshing stale MTProto authorization on dc={}", loc.dc_id);
+                    main_conn = MtProtoConnection::connect_and_authorize_fresh(loc.dc_id, api_id, api_hash, bot_token).await?;
                     continue;
                 }
                 return Err(e);
@@ -377,7 +389,7 @@ pub async fn download_large_file_via_mtproto(
                 let q = build_get_file_query(&loc_clone, offset, CHUNK_SIZE as i32);
 
                 let mut chunk_res = None;
-                for attempt in 0..3 {
+                for attempt in 0..5 {
                     match conn.rpc_call(&q).await {
                         Ok(r) => {
                             chunk_res = Some(r);
@@ -385,6 +397,7 @@ pub async fn download_large_file_via_mtproto(
                         }
                         Err(e) => {
                             let msg = e.to_string();
+                            tracing::warn!("[dl] part {} attempt {} error: {}", part_idx, attempt, msg);
                             if msg.contains("OFFSET_INVALID") {
                                 eof_clone.store(true, Ordering::Relaxed);
                                 let _ = tx_clone.send((part_idx, Vec::new(), true)).await;
@@ -397,13 +410,14 @@ pub async fn download_large_file_via_mtproto(
                             if msg.contains("LOCATION_INVALID") || msg.contains("FILE_REFERENCE_EXPIRED") {
                                 return Err(e);
                             }
-                            if attempt == 2 {
+                            if attempt == 4 {
                                 return Err(e);
                             }
+                            let backoff = std::time::Duration::from_millis(50 * (1 << attempt));
+                            tokio::time::sleep(backoff).await;
                             if let Ok(new_c) = MtProtoConnection::connect_with_auth(shared_auth, api_id).await {
                                 conn = new_c;
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         }
                     }
                 }
@@ -475,6 +489,14 @@ pub async fn download_large_file_via_mtproto(
 
     // Atomically move verified complete file to target destination
     fs::rename(&part_path, &target_path).await?;
+
+    let secs = t_start.elapsed().as_secs_f64().max(0.001);
+    tracing::info!(
+        "[dl] done {} bytes in {:.2}s ({:.2} MB/s)",
+        total_downloaded,
+        secs,
+        total_downloaded as f64 / 1_048_576.0 / secs
+    );
 
     Ok((target_path, total_downloaded))
 }
