@@ -12,7 +12,7 @@ pub mod storage;
 pub mod watchdog;
 pub mod webhook;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use clap::Parser;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -79,19 +79,34 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let addr = config.address()?;
-    let effective_files_dir = config.files_dir.as_deref().unwrap_or(&config.dir);
+    let raw_dir = PathBuf::from(&config.dir);
+    let effective_dir = std::fs::canonicalize(&raw_dir).unwrap_or_else(|_| {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(&raw_dir)
+    });
+    let effective_files_dir = config
+        .files_dir
+        .as_deref()
+        .map(|p| {
+            let pb = PathBuf::from(p);
+            std::fs::canonicalize(&pb).unwrap_or_else(|_| {
+                std::env::current_dir().unwrap_or_default().join(&pb)
+            })
+        })
+        .unwrap_or_else(|| effective_dir.clone());
 
     tracing::info!(
         "Starting Telegram Bot API Server v{} on {} (Local mode: {}, Dir: {}, Files Dir: {})",
         env!("CARGO_PKG_VERSION"),
         addr,
         config.local_mode,
-        config.dir,
-        effective_files_dir
+        effective_dir.display(),
+        effective_files_dir.display()
     );
 
-    let storage = StorageEngine::new(Path::new(&config.dir))?;
-    tracing::info!("SQLite WAL + L1 DashMap Storage Engine initialized in {}", config.dir);
+    let storage = StorageEngine::new(&effective_dir)?;
+    tracing::info!("SQLite WAL + L1 DashMap Storage Engine initialized in {}", effective_dir.display());
 
     let proxy_url = config.normalized_proxy();
     if let Some(ref p) = proxy_url {
@@ -101,7 +116,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let engine = Arc::new(
         TelegramEngine::with_options(
             config.local_mode,
-            PathBuf::from(effective_files_dir),
+            effective_files_dir,
             PathBuf::from(&config.temp_dir),
             storage,
             proxy_url.as_deref(),

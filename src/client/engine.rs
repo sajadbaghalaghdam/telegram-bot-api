@@ -969,7 +969,10 @@ impl TelegramEngine {
                         self.dir.join(p)
                     };
                     if check_path.exists() {
-                        return Ok(cached);
+                        let mut res = cached.clone();
+                        let abs_path = std::fs::canonicalize(&check_path).unwrap_or(check_path);
+                        res.file_path = Some(abs_path.to_string_lossy().to_string());
+                        return Ok(res);
                     }
                 }
             }
@@ -1012,17 +1015,28 @@ impl TelegramEngine {
                     }
                 })?;
 
-                let rel_path = target_file
-                    .strip_prefix(&self.dir)
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    .unwrap_or_else(|_| target_file.to_string_lossy().replace('\\', "/"));
+                let path_str = if self.local_mode {
+                    let abs_path = std::fs::canonicalize(&target_file).unwrap_or_else(|_| {
+                        if target_file.is_absolute() {
+                            target_file.clone()
+                        } else {
+                            self.dir.join(&target_file)
+                        }
+                    });
+                    abs_path.to_string_lossy().to_string()
+                } else {
+                    target_file
+                        .strip_prefix(&self.dir)
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_else(|_| target_file.to_string_lossy().replace('\\', "/"))
+                };
 
                 let unique_id = format!("AgAD{:x}", req.file_id.len());
                 let file = File {
                     file_id: req.file_id.clone(),
                     file_unique_id: unique_id,
                     file_size: Some(total_bytes as i64),
-                    file_path: Some(rel_path),
+                    file_path: Some(path_str),
                 };
                 self.storage.save_cached_file(&file).await;
                 return Ok(file);
@@ -1079,11 +1093,22 @@ impl TelegramEngine {
                 }
 
                 if target_file.exists() {
-                    let rel_path = target_file
-                        .strip_prefix(&self.dir)
-                        .map(|p| p.to_string_lossy().replace('\\', "/"))
-                        .unwrap_or_else(|_| target_file.to_string_lossy().replace('\\', "/"));
-                    file.file_path = Some(rel_path);
+                    let path_str = if self.local_mode {
+                        let abs_path = std::fs::canonicalize(&target_file).unwrap_or_else(|_| {
+                            if target_file.is_absolute() {
+                                target_file.clone()
+                            } else {
+                                self.dir.join(&target_file)
+                            }
+                        });
+                        abs_path.to_string_lossy().to_string()
+                    } else {
+                        target_file
+                            .strip_prefix(&self.dir)
+                            .map(|p| p.to_string_lossy().replace('\\', "/"))
+                            .unwrap_or_else(|_| target_file.to_string_lossy().replace('\\', "/"))
+                    };
+                    file.file_path = Some(path_str);
                     self.storage.save_cached_file(&file).await;
                 }
             }
@@ -1304,6 +1329,14 @@ impl TelegramEngine {
         if !self.local_mode {
             return None;
         }
+        let cand_abs = PathBuf::from(file_path);
+        if cand_abs.is_absolute() && cand_abs.exists() && cand_abs.is_file() {
+            return Some(cand_abs);
+        }
+        let cand0 = self.dir.join(file_path);
+        if cand0.exists() && cand0.is_file() {
+            return Some(cand0);
+        }
         let bot_folder = Self::bot_dir_name(token);
         let cand1 = self.dir.join(&bot_folder).join(file_path);
         if cand1.exists() && cand1.is_file() {
@@ -1313,9 +1346,8 @@ impl TelegramEngine {
         if cand2.exists() && cand2.is_file() {
             return Some(cand2);
         }
-        let cand3 = PathBuf::from(file_path);
-        if cand3.exists() && cand3.is_file() {
-            return Some(cand3);
+        if cand_abs.exists() && cand_abs.is_file() {
+            return Some(cand_abs);
         }
         None
     }
