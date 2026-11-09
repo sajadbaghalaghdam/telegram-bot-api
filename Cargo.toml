@@ -1,6 +1,6 @@
 [package]
 name = "telegram-bot-api-rs"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2024"
 authors = ["Sajjad Aghdam <34358062+sajadbaghalaghdam@users.noreply.github.com>"]
 description = "High-performance, ultra-low memory Telegram Bot API Server written in 100% pure Rust with native MTProto 2.0 streaming (up to 2000 MB)."
