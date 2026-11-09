@@ -260,6 +260,13 @@ pub async fn download_large_file_via_mtproto(
 
     let chunk0 = parse_upload_file_chunk(&resp0)?;
     if chunk0.is_empty() {
+        // Create an empty file at target destination
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&target_path)
+            .await?;
         return Ok((target_path, 0));
     }
 
@@ -293,22 +300,60 @@ pub async fn download_large_file_via_mtproto(
     // 4. Multi-worker parallel download pipeline:
     // Parallel TCP worker connections stream remaining 512 KB chunks at full network capacity.
     // Chunks are transferred over an asynchronous mpsc channel to a dedicated async disk writer.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, Vec<u8>)>(32);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, Vec<u8>, bool)>(32);
 
     let writer_handle = tokio::spawn(async move {
-        let mut total = chunk0.len() as u64;
-        while let Some((part_idx, data)) = rx.recv().await {
+        let mut received_parts = std::collections::HashSet::new();
+        received_parts.insert(0); // part 0 is already written
+        let mut confirmed_last_part = None;
+        let mut max_written_bytes = chunk0.len() as u64;
+        let mut final_total_bytes = None;
+
+        while let Some((part_idx, data, is_last)) = rx.recv().await {
+            if data.is_empty() {
+                // Empty EOF marker: part_idx is past EOF, so part_idx - 1 was the final part
+                if part_idx > 0 && confirmed_last_part.is_none() {
+                    confirmed_last_part = Some(part_idx - 1);
+                }
+                continue;
+            }
+
             let offset = (part_idx * CHUNK_SIZE) as u64;
             out_file.seek(SeekFrom::Start(offset)).await?;
             out_file.write_all(&data).await?;
+            received_parts.insert(part_idx);
+
             let end_offset = offset + data.len() as u64;
-            if end_offset > total {
-                total = end_offset;
+            if end_offset > max_written_bytes {
+                max_written_bytes = end_offset;
+            }
+
+            if is_last {
+                confirmed_last_part = Some(part_idx);
+                final_total_bytes = Some(end_offset);
             }
         }
-        out_file.flush().await?;
-        out_file.set_len(total).await?;
-        Ok::<u64, Error>(total)
+
+        if let Some(last_idx) = confirmed_last_part {
+            // Contiguity verification: assert that every part from 0 to last_idx was received without gaps
+            for part in 0..=last_idx {
+                if !received_parts.contains(&part) {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!("Incomplete download: chunk {} missing from range 0..={}", part, last_idx),
+                    ));
+                }
+            }
+            let total_len = final_total_bytes.unwrap_or(max_written_bytes);
+            out_file.set_len(total_len).await?;
+            out_file.flush().await?;
+            Ok::<u64, Error>(total_len)
+        } else {
+            Err(Error::new(
+                ErrorKind::UnexpectedEof,
+                "Incomplete download: connection ended without reaching EOF",
+            ))
+        }
     });
 
     let next_part = Arc::new(AtomicUsize::new(1));
@@ -340,9 +385,17 @@ pub async fn download_large_file_via_mtproto(
                         }
                         Err(e) => {
                             let msg = e.to_string();
-                            if msg.contains("OFFSET_INVALID") || msg.contains("LOCATION_INVALID") {
+                            if msg.contains("OFFSET_INVALID") {
                                 eof_clone.store(true, Ordering::Relaxed);
+                                let _ = tx_clone.send((part_idx, Vec::new(), true)).await;
                                 return Ok(());
+                            }
+                            if let Some(wait_secs) = MtProtoConnection::parse_flood_wait(&msg) {
+                                tokio::time::sleep(std::time::Duration::from_secs(wait_secs.max(1))).await;
+                                continue;
+                            }
+                            if msg.contains("LOCATION_INVALID") || msg.contains("FILE_REFERENCE_EXPIRED") {
+                                return Err(e);
                             }
                             if attempt == 2 {
                                 return Err(e);
@@ -363,15 +416,18 @@ pub async fn download_large_file_via_mtproto(
                 let chunk_data = parse_upload_file_chunk(&resp)?;
                 if chunk_data.is_empty() {
                     eof_clone.store(true, Ordering::Relaxed);
+                    let _ = tx_clone.send((part_idx, Vec::new(), true)).await;
                     break;
                 }
 
                 let len = chunk_data.len();
-                if tx_clone.send((part_idx, chunk_data)).await.is_err() {
+                let is_last = len < CHUNK_SIZE;
+
+                if tx_clone.send((part_idx, chunk_data, is_last)).await.is_err() {
                     break;
                 }
 
-                if len < CHUNK_SIZE {
+                if is_last {
                     eof_clone.store(true, Ordering::Relaxed);
                     break;
                 }

@@ -10,11 +10,12 @@ pub struct IntermediateTransport {
 
 impl IntermediateTransport {
     const PROTOCOL_TAG: [u8; 4] = [0xee, 0xee, 0xee, 0xee];
-    const MAX_PACKET_SIZE: usize = 1024 * 1024;
+    const MAX_PACKET_SIZE: usize = 4 * 1024 * 1024;
     const HEADER_SIZE: usize = 4;
 
     pub async fn connect(addr: &str) -> Result<Self, Error> {
         let mut stream = TcpStream::connect(addr).await?;
+        stream.set_nodelay(true)?;
         stream.write_all(&Self::PROTOCOL_TAG).await?;
         stream.flush().await?;
         Ok(Self { stream })
