@@ -173,8 +173,11 @@ impl MtProtoConnection {
                         continue;
                     }
                     if let Some(wait_secs) = Self::parse_flood_wait(&msg) {
-                        tokio::time::sleep(Duration::from_secs(wait_secs.max(1))).await;
-                        continue;
+                        if wait_secs <= 3 {
+                            tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                            continue;
+                        }
+                        return Err(e);
                     }
                     return Err(e);
                 }
@@ -373,10 +376,14 @@ impl MtProtoConnection {
                         Err(e) => {
                             let msg = e.to_string();
                             if let Some(wait_secs) = Self::parse_flood_wait(&msg) {
-                                tracing::warn!("[rpc] dc={} {} -> sleeping {}s", self.dc_id, msg, wait_secs);
-                                tokio::time::sleep(Duration::from_secs(wait_secs.max(1))).await;
-                                req_msg_id = self.send_encrypted(&effective_query, true).await?;
-                                break;
+                                if wait_secs <= 3 {
+                                    tracing::warn!("[rpc] dc={} {} -> sleeping {}s", self.dc_id, msg, wait_secs);
+                                    tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                                    req_msg_id = self.send_encrypted(&effective_query, true).await?;
+                                    break;
+                                }
+                                tracing::warn!("[rpc] dc={} {} -> fast-fail (429)", self.dc_id, msg);
+                                return Err(e);
                             }
                             return Err(e);
                         }

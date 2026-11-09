@@ -59,6 +59,17 @@ fn format_error_prefix(prefix: &str, msg: &str) -> String {
 }
 
 impl TelegramError {
+    pub fn flood_wait(wait_secs: u64) -> Self {
+        Self::ApiError {
+            code: 429,
+            description: format!("Too Many Requests: retry after {wait_secs}"),
+            parameters: Some(ResponseParameters {
+                migrate_to_chat_id: None,
+                retry_after: Some(wait_secs as i32),
+            }),
+        }
+    }
+
     /// Maps the internal error variant to the corresponding HTTP status code.
     fn status_code(&self) -> StatusCode {
         match self {

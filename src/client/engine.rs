@@ -1003,7 +1003,14 @@ impl TelegramEngine {
                     &target_dir,
                 )
                 .await
-                .map_err(|e| TelegramError::BadRequest(format!("MTProto download failed: {e}")))?;
+                .map_err(|e| {
+                    let msg = e.to_string();
+                    if let Some(wait_secs) = crate::mtproto::uploader::MtProtoConnection::parse_flood_wait(&msg) {
+                        TelegramError::flood_wait(wait_secs)
+                    } else {
+                        TelegramError::BadRequest(format!("MTProto download failed: {e}"))
+                    }
+                })?;
 
                 let rel_path = target_file
                     .strip_prefix(&self.dir)
@@ -1521,11 +1528,19 @@ impl TelegramEngine {
                         return Ok(Bytes::from(vec));
                     }
                     Err(e) => {
-                        let err_json = serde_json::json!({
-                            "ok": false,
-                            "error_code": 400,
-                            "description": e.to_string()
-                        });
+                        let err_json = match e {
+                            TelegramError::ApiError { code, description, parameters } => serde_json::json!({
+                                "ok": false,
+                                "error_code": code,
+                                "description": description,
+                                "parameters": parameters
+                            }),
+                            _ => serde_json::json!({
+                                "ok": false,
+                                "error_code": 400,
+                                "description": e.to_string()
+                            }),
+                        };
                         return Ok(Bytes::from(serde_json::to_vec(&err_json).unwrap_or_default()));
                     }
                 }

@@ -255,8 +255,12 @@ pub async fn download_large_file_via_mtproto(
                     continue;
                 }
                 if let Some(wait_secs) = MtProtoConnection::parse_flood_wait(&err_msg) {
-                    tokio::time::sleep(std::time::Duration::from_secs(wait_secs.max(1))).await;
-                    continue;
+                    if wait_secs <= 3 {
+                        tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+                        continue;
+                    }
+                    tracing::warn!("[dl] dc={} flood wait {}s -> fast-fail (429)", main_conn.dc_id, wait_secs);
+                    return Err(e);
                 }
                 // If cached auth failed or dropped connection, refresh authorization once
                 if !refreshed_auth && (err_msg.contains("early eof") || err_msg.contains("TransportError") || err_msg.contains("AUTH_KEY")) {
@@ -404,8 +408,11 @@ pub async fn download_large_file_via_mtproto(
                                 return Ok(());
                             }
                             if let Some(wait_secs) = MtProtoConnection::parse_flood_wait(&msg) {
-                                tokio::time::sleep(std::time::Duration::from_secs(wait_secs.max(1))).await;
-                                continue;
+                                if wait_secs <= 3 {
+                                    tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+                                    continue;
+                                }
+                                return Err(e);
                             }
                             if msg.contains("LOCATION_INVALID") || msg.contains("FILE_REFERENCE_EXPIRED") {
                                 return Err(e);
