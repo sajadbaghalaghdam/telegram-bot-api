@@ -934,8 +934,8 @@ impl TelegramEngine {
         let url = format!("{}/bot{token}/getFile", self.upstream_base_url);
         let resp: ApiResponse<File> = self
             .client
-            .post(&url)
-            .json(req)
+            .get(&url)
+            .query(&[("file_id", &req.file_id)])
             .send()
             .await
             .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
@@ -945,7 +945,15 @@ impl TelegramEngine {
 
         if !resp.ok {
             let desc = resp.description.as_deref().unwrap_or("");
-            if self.local_mode && (desc.to_ascii_lowercase().contains("too big") || desc.contains("file is too big")) {
+            let desc_lower = desc.to_ascii_lowercase();
+            if self.local_mode
+                && (desc_lower.contains("too big")
+                    || desc_lower.contains("file is too big")
+                    || desc_lower.contains("file_id not specified")
+                    || desc_lower.contains("wrong file identifier")
+                    || desc_lower.contains("not found")
+                    || resp.error_code == Some(400))
+            {
                 let bot_folder = Self::bot_dir_name(token);
                 let target_dir = self.dir.join(bot_folder);
                 let (target_file, total_bytes) = crate::mtproto::download_large_file_via_mtproto(
@@ -1422,6 +1430,18 @@ impl TelegramEngine {
                 if let Ok(json) = serde_json::from_slice::<Value>(&body_bytes) {
                     if let Some(fid) = json.get("file_id").and_then(|v| v.as_str()) {
                         file_id = fid.to_string();
+                    }
+                }
+                if file_id.is_empty() {
+                    if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
+                        for pair in body_str.split('&') {
+                            if let Some((k, v)) = pair.split_once('=') {
+                                if k == "file_id" {
+                                    file_id = v.to_string();
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
