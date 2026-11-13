@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use tokio::io::AsyncWriteExt;
+use crate::client::relay::RelayCall;
 use crate::client::upload::LargeUpload;
 use crate::error::{TelegramError, TelegramResult};
 use crate::server::AppState;
@@ -184,27 +185,23 @@ pub async fn generic_post_handler(
         .await
         .map_err(|e| TelegramError::BadRequest(format!("Failed to read request body: {e}")))?;
 
-    let q_str = raw_query.as_deref();
-    let out = state
+    let relayed = state
         .engine
-        .universal_call(clean_token, &method, &query_map, q_str, ct.as_deref(), body)
+        .relay(RelayCall {
+            token: clean_token,
+            method: &method,
+            query_map: &query_map,
+            query: raw_query.as_deref(),
+            content_type: ct.as_deref(),
+            body,
+        })
         .await?;
 
-    let (status, retry_after) = if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out) {
-        if json.get("ok").and_then(|v| v.as_bool()) == Some(false) {
-            let code = json.get("error_code").and_then(|v| v.as_u64()).unwrap_or(400) as u16;
-            let st = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST);
-            let ra = json
-                .get("parameters")
-                .and_then(|p| p.get("retry_after"))
-                .and_then(|v| v.as_i64());
-            (st, ra)
-        } else {
-            (StatusCode::OK, None)
-        }
-    } else {
-        (StatusCode::OK, None)
+    let (status, retry_after) = match relayed.head.failure() {
+        Some((code, retry_after)) => (StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST), retry_after),
+        None => (StatusCode::OK, None),
     };
+    let out = relayed.body;
 
     if status == StatusCode::OK
         && (method.eq_ignore_ascii_case("close") || method.eq_ignore_ascii_case("logout"))

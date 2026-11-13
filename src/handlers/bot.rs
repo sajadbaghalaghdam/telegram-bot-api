@@ -3,6 +3,9 @@ use axum::{
     http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
+use std::collections::HashMap;
+use bytes::Bytes;
+use crate::client::relay::RelayCall;
 use crate::error::TelegramResult;
 use crate::server::AppState;
 
@@ -24,21 +27,21 @@ pub async fn get_me(
 /// Delegates to the universal call path so close/logOut share validation, upstream relay and cleanup.
 async fn lifecycle_call(state: &AppState, token: &str, method: &str) -> TelegramResult<Response> {
     let clean_token = token.strip_prefix("bot").unwrap_or(token);
-    let out = state
+    let relayed = state
         .engine
-        .universal_call(
-            clean_token,
+        .relay(RelayCall {
+            token: clean_token,
             method,
-            &std::collections::HashMap::new(),
-            None,
-            None,
-            bytes::Bytes::new(),
-        )
+            query_map: &HashMap::new(),
+            query: None,
+            content_type: None,
+            body: Bytes::new(),
+        })
         .await?;
-    let failure_code = serde_json::from_slice::<serde_json::Value>(&out)
-        .ok()
-        .filter(|j| j.get("ok").and_then(|v| v.as_bool()) == Some(false))
-        .and_then(|j| j.get("error_code").and_then(|v| v.as_u64()));
+    let failure_code = (relayed.head.ok == Some(false))
+        .then(|| relayed.head.error_code.and_then(|c| u64::try_from(c).ok()))
+        .flatten();
+    let out = relayed.body;
     if failure_code.is_none() {
         state.client_manager.close(clean_token);
     }

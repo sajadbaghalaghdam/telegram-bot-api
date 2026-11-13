@@ -8,6 +8,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use super::engine::TelegramEngine;
+use super::reply::{Relayed, ReplyHead};
 use super::util::ascii_lower;
 use crate::error::{TelegramError, TelegramResult};
 use crate::models::ApiResponse;
@@ -90,22 +91,24 @@ impl TelegramEngine {
         content_type: Option<&str>,
         body_bytes: Bytes,
     ) -> TelegramResult<Bytes> {
-        self.relay(RelayCall {
-            token,
-            method,
-            query_map,
-            query: query_str,
-            content_type,
-            body: body_bytes,
-        })
-        .await
+        let relayed = self
+            .relay(RelayCall {
+                token,
+                method,
+                query_map,
+                query: query_str,
+                content_type,
+                body: body_bytes,
+            })
+            .await?;
+        Ok(relayed.body)
     }
 
     /// Validates the token, executes the call and keeps the seen-bots map in sync with the answer.
-    pub async fn relay(self: &Arc<Self>, call: RelayCall<'_>) -> TelegramResult<Bytes> {
+    pub async fn relay(self: &Arc<Self>, call: RelayCall<'_>) -> TelegramResult<Relayed> {
         let token = call.token;
         self.check_token_filter(token)?;
-        let reply = self.relay_inner(call).await;
+        let reply = self.relay_inner(call).await.map(Relayed::new);
         self.note_upstream_reply(token, &reply);
         reply
     }
@@ -184,11 +187,7 @@ impl TelegramEngine {
             .bytes()
             .await
             .map_err(|e| TelegramError::Internal(format!("Read error: {e}")))?;
-        let ok = serde_json::from_slice::<serde_json::Value>(&out)
-            .ok()
-            .and_then(|j| j.get("ok").and_then(|v| v.as_bool()))
-            .unwrap_or(false);
-        if ok {
+        if ReplyHead::parse(&out).ok == Some(true) {
             self.stop_webhook_worker(token);
             self.storage.delete_webhook(token).await;
             crate::mtproto::uploader::invalidate_bot_auth(token);

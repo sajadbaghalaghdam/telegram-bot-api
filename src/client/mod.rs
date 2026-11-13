@@ -4,6 +4,7 @@ mod local_media;
 pub mod manager;
 pub mod profile;
 pub mod relay;
+pub mod reply;
 pub mod token;
 pub mod upload;
 mod util;

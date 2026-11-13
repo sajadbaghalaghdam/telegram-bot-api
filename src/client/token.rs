@@ -1,8 +1,7 @@
 //! Token validation (C++ `ClientManager::send` rules) and the bounded set of bots seen alive.
 
-use bytes::Bytes;
-
 use super::engine::TelegramEngine;
+use super::reply::Relayed;
 use crate::error::TelegramError;
 
 impl TelegramEngine {
@@ -24,27 +23,11 @@ impl TelegramEngine {
 
     /// Updates the seen-bots map from an upstream reply: record on ok:true, forget on error_code 401.
     /// Only tokens upstream accepted are counted, so fake tokens cannot inflate `bot_count`.
-    pub(super) fn note_upstream_reply(&self, token: &str, reply: &Result<Bytes, TelegramError>) {
+    pub(super) fn note_upstream_reply(&self, token: &str, reply: &Result<Relayed, TelegramError>) {
         match reply {
-            Ok(bytes) => {
-                #[derive(serde::Deserialize)]
-                struct Head {
-                    ok: Option<bool>,
-                    error_code: Option<i64>,
-                }
-                // Skip the parse for already-known bots unless the reply is small enough to be a 401.
-                let bot_id = token.split(':').next().unwrap_or(token);
-                if self.active_bots.contains_key(bot_id) && bytes.len() > 4096 {
-                    return;
-                }
-                if let Ok(h) = serde_json::from_slice::<Head>(bytes) {
-                    if h.ok == Some(true) {
-                        self.record_active_bot(token);
-                    } else if h.error_code == Some(401) {
-                        self.forget_active_bot(token);
-                    }
-                }
-            }
+            Ok(r) if r.head.ok == Some(true) => self.record_active_bot(token),
+            Ok(r) if r.head.error_code == Some(401) => self.forget_active_bot(token),
+            Ok(_) => {}
             Err(TelegramError::Unauthorized(_)) | Err(TelegramError::ApiError { code: 401, .. }) => {
                 self.forget_active_bot(token)
             }
