@@ -345,6 +345,7 @@ impl MtProtoConnection {
             let (srv_msg_id, srv_seq_no, payload) = unpack_encrypted_message(
                 self.session.auth_key(),
                 self.session.auth_key_id(),
+                self.session.session_id,
                 &self.read_buf,
             )
             .map_err(|e| match e {
@@ -424,6 +425,7 @@ impl MtProtoConnection {
             let (srv_msg_id, srv_seq_no, payload) = unpack_encrypted_message(
                 self.session.auth_key(),
                 self.session.auth_key_id(),
+                self.session.session_id,
                 &self.read_buf,
             )
             .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;

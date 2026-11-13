@@ -10,6 +10,8 @@ pub enum TLError {
     UnexpectedEof,
     #[error("Invalid UTF-8 sequence")]
     InvalidUtf8(#[from] str::Utf8Error),
+    #[error("Reserved length marker 0xff in TL string")]
+    InvalidLengthMarker,
     #[error("Data length {0} exceeds maximum allowed limit")]
     TooLarge(usize),
 }
@@ -94,6 +96,10 @@ pub fn read_bytes<'a>(cursor: &mut &'a [u8]) -> Result<&'a [u8], TLError> {
     }
 
     let first_byte = cursor[0];
+    if first_byte == 255 {
+        // 255 is a reserved length marker in the TL string encoding.
+        return Err(TLError::InvalidLengthMarker);
+    }
     let (len, header_len) = if first_byte < 254 {
         let l = first_byte as usize;
         *cursor = &cursor[1..];
@@ -187,5 +193,12 @@ mod tests {
 
         let mut cursor = buf.as_ref();
         assert_eq!(read_bytes(&mut cursor).unwrap(), val);
+    }
+
+    #[test]
+    fn test_read_bytes_rejects_255_marker() {
+        let data = [255u8, 1, 0, 0, 0, 0, 0, 0];
+        let mut cursor = &data[..];
+        assert_eq!(read_bytes(&mut cursor), Err(TLError::InvalidLengthMarker));
     }
 }

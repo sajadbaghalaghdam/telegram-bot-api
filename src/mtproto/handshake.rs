@@ -19,6 +19,59 @@ pub struct HandshakeResult {
     pub time_offset: i64,
 }
 
+/// 2^(2048-64) <= v <= p - 2^(2048-64), and 1 < v < p - 1.
+fn dh_value_in_range(v: &BigUint, prime: &BigUint) -> bool {
+    let one = BigUint::from(1u32);
+    if *v <= one || *v >= prime - &one {
+        return false;
+    }
+    let safety = BigUint::from(1u32) << (2048 - 64);
+    *v >= safety && *v <= prime - &safety
+}
+
+fn miller_rabin(n: &BigUint) -> bool {
+    let one = BigUint::from(1u32);
+    let two = BigUint::from(2u32);
+    if *n < two {
+        return false;
+    }
+    for sp in [2u32, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
+        let spb = BigUint::from(sp);
+        if *n == spb {
+            return true;
+        }
+        if (n % &spb) == BigUint::from(0u32) {
+            return false;
+        }
+    }
+    let n_minus_1 = n - &one;
+    let s = n_minus_1.trailing_zeros().unwrap_or(0);
+    let d = &n_minus_1 >> s;
+    'witness: for a in [2u32, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
+        let mut x = BigUint::from(a).modpow(&d, n);
+        if x == one || x == n_minus_1 {
+            continue;
+        }
+        for _ in 1..s {
+            x = (&x * &x) % n;
+            if x == n_minus_1 {
+                continue 'witness;
+            }
+        }
+        return false;
+    }
+    true
+}
+
+/// p and (p-1)/2 must both be prime, and p must be a full 2048-bit number.
+fn is_good_prime(p: &BigUint) -> bool {
+    if p.bits() != 2048 || p.bit(0) == false {
+        return false;
+    }
+    let q: BigUint = (p - 1u32) >> 1;
+    miller_rabin(p) && miller_rabin(&q)
+}
+
 pub struct MtProtoHandshake<'a> {
     transport: &'a mut IntermediateTransport,
     dc_id: i32,
@@ -94,7 +147,8 @@ impl<'a> MtProtoHandshake<'a> {
         let rsa_key = matched_key.unwrap_or(&TELEGRAM_RSA_KEYS[0]);
 
         // Factorize pq into p and q (p <= q) and strip leading zero bytes (matching as_big_endian_string in tdutils/crypto.cpp)
-        let (p, q) = factorize(pq);
+        let (p, q) = factorize(pq)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "pq cannot be factorized"))?;
         let p_be = p.to_be_bytes();
         let q_be = q.to_be_bytes();
         let p_start = p_be.iter().position(|&b| b != 0).unwrap_or(7);
@@ -191,15 +245,36 @@ impl<'a> MtProtoHandshake<'a> {
             return Err(Error::new(ErrorKind::InvalidData, "server_DH_inner_data SHA1 mismatch"));
         }
 
-        // Compute Diffie-Hellman g_b = g^b mod p and auth_key = g_a^b mod p
-        let mut b_raw = [0u8; 256];
-        rand::thread_rng().fill_bytes(&mut b_raw);
-        let b = BigUint::from_bytes_be(&b_raw);
+        // Validate DH parameters before use (TDLib DhHandshake::check_config / dh_check).
         let prime = BigUint::from_bytes_be(dh_prime_bytes);
-        let g_big = BigUint::from(g as u32);
         let g_a = BigUint::from_bytes_be(g_a_bytes);
+        if dh_prime_bytes.len() != 256 || !(2..=7).contains(&g) {
+            return Err(Error::new(ErrorKind::InvalidData, "Invalid DH prime length or generator"));
+        }
+        if !is_good_prime(&prime) {
+            return Err(Error::new(ErrorKind::InvalidData, "DH prime is not a safe prime"));
+        }
+        if !dh_value_in_range(&g_a, &prime) {
+            return Err(Error::new(ErrorKind::InvalidData, "g_a is out of the allowed range"));
+        }
 
-        let g_b_vec = g_big.modpow(&b, &prime).to_bytes_be();
+        // Compute Diffie-Hellman g_b = g^b mod p and auth_key = g_a^b mod p
+        let one = BigUint::from(1u32);
+        let b = loop {
+            let mut b_raw = [0u8; 256];
+            rand::thread_rng().fill_bytes(&mut b_raw);
+            let cand = BigUint::from_bytes_be(&b_raw);
+            if cand > one && cand < &prime - &one {
+                break cand;
+            }
+        };
+        let g_big = BigUint::from(g as u32);
+
+        let g_b_val = g_big.modpow(&b, &prime);
+        if !dh_value_in_range(&g_b_val, &prime) {
+            return Err(Error::new(ErrorKind::InvalidData, "g_b is out of the allowed range"));
+        }
+        let g_b_vec = g_b_val.to_bytes_be();
         let mut g_b_padded = [0u8; 256];
         g_b_padded[256 - g_b_vec.len()..].copy_from_slice(&g_b_vec);
 
@@ -313,5 +388,26 @@ impl<'a> MtProtoHandshake<'a> {
 
     fn tl_err(e: super::tl::TLError) -> Error {
         Error::new(ErrorKind::InvalidData, e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dh_range_checks() {
+        let p = (BigUint::from(1u32) << 2048) - 159u32;
+        assert!(!dh_value_in_range(&BigUint::from(1u32), &p));
+        assert!(!dh_value_in_range(&(&p - 1u32), &p));
+        assert!(!dh_value_in_range(&BigUint::from(12345u32), &p));
+        assert!(dh_value_in_range(&(&p >> 1), &p));
+    }
+
+    #[test]
+    fn miller_rabin_basic() {
+        assert!(miller_rabin(&BigUint::from(1000000007u64)));
+        assert!(!miller_rabin(&BigUint::from(1000000007u64 * 3)));
+        assert!(!is_good_prime(&BigUint::from(23u32)));
     }
 }
