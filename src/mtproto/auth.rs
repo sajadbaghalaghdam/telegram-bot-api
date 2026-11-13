@@ -39,8 +39,16 @@ pub fn invalidate_bot_auth(token: &str) {
     home_dc_cache().remove(token);
 }
 
+/// Test-only: redirects every DC to a local mock server (see `bench_tests`).
+#[cfg(test)]
+pub(super) static TEST_DC_ADDR: OnceLock<String> = OnceLock::new();
+
 /// Production DC addresses (from td/telegram/net/ConnectionCreator.cpp)
 pub fn dc_address(dc_id: i32) -> &'static str {
+    #[cfg(test)]
+    if let Some(addr) = TEST_DC_ADDR.get() {
+        return addr.as_str();
+    }
     match dc_id {
         1 => "149.154.175.50:443",
         2 => "149.154.167.51:443",

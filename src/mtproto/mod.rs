@@ -1,4 +1,6 @@
 pub mod auth;
+#[cfg(test)]
+mod bench_tests;
 pub mod connection;
 pub mod crypto;
 pub mod downloader;
