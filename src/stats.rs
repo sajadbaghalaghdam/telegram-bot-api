@@ -96,9 +96,10 @@ impl ServerStats {
         self.start_time.elapsed().as_secs_f64()
     }
 
-    /// Generates human-readable and Prometheus-compatible metrics text
+    /// Generates the report in the C++ `/stats` style: tab-separated `key\tvalue` rows.
+    /// Per-bot sections and time-windowed (5sec/1min/1hour) values are not tracked by this port.
     pub fn to_report(&self) -> String {
-        let uptime = self.uptime_seconds();
+        let uptime = self.uptime_seconds() as u64;
         let total = self.total_requests.load(Ordering::Relaxed);
         let ok = self.ok_requests.load(Ordering::Relaxed);
         let err = self.error_requests.load(Ordering::Relaxed);
@@ -106,19 +107,33 @@ impl ServerStats {
         let bout = self.bytes_sent.load(Ordering::Relaxed);
         let bots = self.active_bots.load(Ordering::Relaxed);
 
-        let rps = if uptime > 0.001 { total as f64 / uptime } else { 0.0 };
-
         format!(
-            "# Telegram Bot API Server (Pure Rust) Statistics\n\
-            uptime_seconds: {:.2}\n\
-            total_requests: {}\n\
-            requests_per_second: {:.2}\n\
-            successful_requests: {}\n\
-            error_requests: {}\n\
-            bytes_received: {}\n\
-            bytes_sent: {}\n\
-            active_bots_count: {}\n",
-            uptime, total, rps, ok, err, bin, bout, bots
+            "uptime\t{uptime}\n\
+            bot_count\t{bots}\n\
+            active_bot_count\t{bots}\n\
+            total_requests\t{total}\n\
+            successful_requests\t{ok}\n\
+            error_requests\t{err}\n\
+            bytes_received\t{bin}\n\
+            bytes_sent\t{bout}\n"
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_is_tab_separated() {
+        let s = ServerStats::new();
+        s.record_request(10);
+        s.record_response(true, 20);
+        s.set_active_bots(3);
+        let r = s.to_report();
+        assert!(r.contains("\nbot_count\t3\n"));
+        assert!(r.contains("total_requests\t1\n"));
+        assert!(r.contains("bytes_sent\t20\n"));
+        assert!(r.lines().all(|l| l.split('\t').count() == 2));
     }
 }

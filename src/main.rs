@@ -3,6 +3,7 @@ pub mod client;
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod logging;
 pub mod models;
 pub mod mtproto;
 pub mod query;
@@ -10,7 +11,6 @@ pub mod server;
 pub mod stats;
 pub mod storage;
 pub mod watchdog;
-pub mod webhook;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -49,21 +49,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ServerConfig::parse();
 
-    let level_str = match config.verbosity {
-        0 => "error",
-        1 => "warn",
-        2 => "info",
-        3 => "debug",
-        _ => "trace",
-    };
+    let level_str = config.log_level();
 
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| level_str.into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| level_str.into());
+
+    // Resolve directories first: relative --log / --temp-dir are interpreted against --files-dir (as in C++).
+    let raw_dir = PathBuf::from(&config.dir);
+    if let Err(e) = config::ensure_writable_dir(&raw_dir, "--dir") {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+    let effective_dir = std::fs::canonicalize(&raw_dir)?;
+    let effective_files_dir = match config.files_dir.as_deref() {
+        Some(p) => {
+            let pb = PathBuf::from(p);
+            if let Err(e) = config::ensure_writable_dir(&pb, "--files-dir") {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+            std::fs::canonicalize(&pb)?
+        }
+        None => effective_dir.clone(),
+    };
+    let effective_temp_dir = ServerConfig::resolve_in(&effective_files_dir, &config.temp_dir);
+    if let Err(e) = config::ensure_writable_dir(&effective_temp_dir, "--temp-dir") {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+
+    let registry = tracing_subscriber::registry().with(filter);
+    match config.log_file.as_deref() {
+        Some(lf) => {
+            let path = ServerConfig::resolve_in(&effective_files_dir, lf);
+            match logging::RotatingFile::open(&path, config.log_max_file_size) {
+                Ok(w) => registry
+                    .with(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(w))
+                    .init(),
+                Err(e) => {
+                    eprintln!("Can't open log file \"{}\": {e}", path.display());
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => registry.with(tracing_subscriber::fmt::layer()).init(),
+    }
 
     if config.api_id <= 0 || config.api_hash.trim().is_empty() {
         eprintln!("You must provide valid api-id and api-hash obtained at https://my.telegram.org");
@@ -79,23 +109,6 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let addr = config.address()?;
-    let raw_dir = PathBuf::from(&config.dir);
-    let effective_dir = std::fs::canonicalize(&raw_dir).unwrap_or_else(|_| {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(&raw_dir)
-    });
-    let effective_files_dir = config
-        .files_dir
-        .as_deref()
-        .map(|p| {
-            let pb = PathBuf::from(p);
-            std::fs::canonicalize(&pb).unwrap_or_else(|_| {
-                std::env::current_dir().unwrap_or_default().join(&pb)
-            })
-        })
-        .unwrap_or_else(|| effective_dir.clone());
-
     tracing::info!(
         "Starting Telegram Bot API Server v{} on {} (Local mode: {}, Dir: {}, Files Dir: {})",
         env!("CARGO_PKG_VERSION"),
@@ -117,7 +130,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         TelegramEngine::with_options(
             config.local_mode,
             effective_files_dir,
-            PathBuf::from(&config.temp_dir),
+            effective_temp_dir,
             storage,
             proxy_url.as_deref(),
             token_filter,
@@ -145,7 +158,21 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // If dedicated --http-stat-port is specified, launch dedicated stats listener on --http-stat-ip-address
-    if let Some(Ok(stat_addr)) = config.stat_address() {
+    if let Some(stat_addr) = config.stat_address() {
+        let stat_addr = match stat_addr {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("Invalid --http-stat-ip-address \"{}\": {e}", config.http_stat_ip_address);
+                std::process::exit(1);
+            }
+        };
+        let stat_listener = match tokio::net::TcpListener::bind(stat_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("Can't bind statistics server to {stat_addr}: {e}");
+                std::process::exit(1);
+            }
+        };
         let stat_stats = Arc::clone(&stats);
         let stat_engine = Arc::clone(&engine);
         let stat_cm = Arc::clone(&client_manager);
@@ -166,7 +193,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                         async move {
                             s.set_active_bots(e.active_bots_count().max(c.active_count()));
                             (
-                                [("content-type", "text/plain; charset=utf-8")],
+                                [("content-type", "text/plain")],
                                 s.to_report(),
                             )
                         }
@@ -181,15 +208,15 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                         async move {
                             s.set_active_bots(e.active_bots_count().max(c.active_count()));
                             (
-                                [("content-type", "text/plain; charset=utf-8")],
+                                [("content-type", "text/plain")],
                                 s.to_report(),
                             )
                         }
                     }),
                 );
-            if let Ok(listener) = tokio::net::TcpListener::bind(stat_addr).await {
-                tracing::info!("Dedicated statistics server listening on http://{}", stat_addr);
-                let _ = axum::serve(listener, stat_app).await;
+            tracing::info!("Dedicated statistics server listening on http://{}", stat_addr);
+            if let Err(e) = axum::serve(stat_listener, stat_app).await {
+                tracing::error!("Statistics server stopped: {e}");
             }
         });
     }

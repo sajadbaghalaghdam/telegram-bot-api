@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::net::{AddrParseError, SocketAddr};
+use std::path::{Path, PathBuf};
 
 /// Server configuration matching 100% of official tdlib/telegram-bot-api CLI options (`telegram-bot-api.cpp`).
 #[derive(Parser, Debug, Clone)]
@@ -38,7 +39,7 @@ pub struct ServerConfig {
     #[arg(long = "files-dir", short = 'f')]
     pub files_dir: Option<String>,
 
-    /// Directory for storing HTTP server temporary files
+    /// Directory for storing HTTP server temporary files (relative paths are resolved against --files-dir)
     #[arg(long = "temp-dir", short = 't', env = "TELEGRAM_TEMP_DIR", default_value = "temp")]
     pub temp_dir: String,
 
@@ -62,15 +63,15 @@ pub struct ServerConfig {
     #[arg(long = "log", short = 'l')]
     pub log_file: Option<String>,
 
-    /// Log verbosity level (0=fatal/error, 1=warn, 2=info, 3=debug, 4+=trace)
-    #[arg(long = "verbosity", short = 'v', default_value_t = 2)]
+    /// Log verbosity level (TDLib scale, default 0: 0-1=error, 2=warn, 3=info, 4=debug, 5+=trace)
+    #[arg(long = "verbosity", short = 'v', default_value_t = 0)]
     pub verbosity: i32,
 
-    /// Memory log verbosity level; defaults to 3
+    /// Memory log verbosity level; accepted for compatibility, has no effect (no in-memory log)
     #[arg(long = "memory-verbosity", default_value_t = 3)]
     pub memory_verbosity: i32,
 
-    /// Maximum size of the log file in bytes before it will be auto-rotated (default is 2000000000)
+    /// Maximum size of the log file in bytes before it is rotated to "<log>.old" (default is 2000000000)
     #[arg(long = "log-max-file-size", default_value_t = 2_000_000_000)]
     pub log_max_file_size: i64,
 
@@ -102,16 +103,30 @@ pub struct ServerConfig {
 impl ServerConfig {
     /// Returns the parsed `SocketAddr` for the HTTP server to bind to.
     pub fn address(&self) -> Result<SocketAddr, AddrParseError> {
-        let addr_str = format!("{}:{}", self.http_ip_address, self.http_port);
-        addr_str.parse()
+        Ok(SocketAddr::new(self.http_ip_address.trim().parse()?, self.http_port))
     }
 
     /// Returns the parsed `SocketAddr` for the dedicated HTTP statistics server.
     pub fn stat_address(&self) -> Option<Result<SocketAddr, AddrParseError>> {
-        self.http_stat_port.map(|port| {
-            let addr_str = format!("{}:{}", self.http_stat_ip_address, port);
-            addr_str.parse()
-        })
+        self.http_stat_port
+            .map(|port| Ok(SocketAddr::new(self.http_stat_ip_address.trim().parse()?, port)))
+    }
+
+    /// Maps the TDLib-style `--verbosity` level to a tracing filter directive.
+    pub fn log_level(&self) -> &'static str {
+        match self.verbosity {
+            ..=1 => "error",
+            2 => "warn",
+            3 => "info",
+            4 => "debug",
+            _ => "trace",
+        }
+    }
+
+    /// Resolves a possibly relative path against `base` (C++ prefixes relative --temp-dir / --log with files-dir).
+    pub fn resolve_in(base: &Path, p: &str) -> PathBuf {
+        let pb = PathBuf::from(p);
+        if pb.is_absolute() { pb } else { base.join(pb) }
     }
 
     /// Returns effective default max webhook connections matching C++ line 483 (`local_mode_ ? 100 : 40`)
@@ -151,5 +166,60 @@ impl ServerConfig {
                 format!("http://{trimmed}")
             }
         })
+    }
+}
+
+/// Creates `dir` if needed and verifies files can be created in it (C++ startup sanity check).
+pub fn ensure_writable_dir(dir: &Path, option: &str) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| {
+        format!("Can't create directory \"{}\": {e}. Use {option} option to specify a writable directory", dir.display())
+    })?;
+    let probe = dir.join(format!(".write_probe_{}", std::process::id()));
+    std::fs::File::create(&probe).map_err(|e| {
+        format!("Can't create files in the directory \"{}\": {e}. Use {option} option to specify a writable directory", dir.display())
+    })?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> ServerConfig {
+        ServerConfig::parse_from(["x", "--api-id", "1", "--api-hash", "h"])
+    }
+
+    #[test]
+    fn resolve_relative_and_absolute() {
+        assert_eq!(ServerConfig::resolve_in(Path::new("/a"), "temp"), PathBuf::from("/a/temp"));
+        assert_eq!(ServerConfig::resolve_in(Path::new("/a"), "/b/t"), PathBuf::from("/b/t"));
+    }
+
+    #[test]
+    fn writable_dir_check() {
+        let d = std::env::temp_dir().join(format!("tba_cfg_test_{}", std::process::id()));
+        assert!(ensure_writable_dir(&d.join("x"), "--dir").is_ok());
+        let f = d.join("file");
+        std::fs::write(&f, b"x").unwrap();
+        assert!(ensure_writable_dir(&f.join("sub"), "--dir").is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn log_level_scale() {
+        let mut c = cfg();
+        assert_eq!(c.log_level(), "error");
+        c.verbosity = 3;
+        assert_eq!(c.log_level(), "info");
+        c.verbosity = 9;
+        assert_eq!(c.log_level(), "trace");
+    }
+
+    #[test]
+    fn ipv6_address_parses() {
+        let mut c = cfg();
+        c.http_ip_address = "::1".into();
+        assert_eq!(c.address().unwrap().to_string(), "[::1]:8081");
     }
 }
