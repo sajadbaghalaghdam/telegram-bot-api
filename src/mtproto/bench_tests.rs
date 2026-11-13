@@ -414,6 +414,30 @@ fn bench_ige() {
     }
     report("ige_decrypt_512K", mb, &runs, iters as f64, "call");
     assert_eq!(super::crypto::aes_256_ige_decrypt(&enc, &key, &iv).unwrap(), data);
+
+    // In-place variants (what the packet path uses).
+    use super::crypto::Aes256Ige;
+    let mut buf = data.clone();
+    let mut runs = Vec::new();
+    for _ in 0..3 {
+        let ((), r) = measured(|| {
+            for _ in 0..iters {
+                Aes256Ige::encrypt_in_place(&mut buf, &key, &iv).unwrap();
+            }
+        });
+        runs.push(r);
+    }
+    report("ige_encrypt_inplace_512K", mb, &runs, iters as f64, "call");
+    let mut runs = Vec::new();
+    for _ in 0..3 {
+        let ((), r) = measured(|| {
+            for _ in 0..iters {
+                Aes256Ige::decrypt_in_place(&mut buf, &key, &iv).unwrap();
+            }
+        });
+        runs.push(r);
+    }
+    report("ige_decrypt_inplace_512K", mb, &runs, iters as f64, "call");
 }
 
 #[test]
