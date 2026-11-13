@@ -190,6 +190,22 @@ fn parse_upload_file_chunk(resp: &[u8]) -> Result<Vec<u8>, Error> {
     }
 }
 
+/// True when an RPC/transport error message indicates a stale/dropped authorization that a
+/// fresh auth key may fix. Matches the real texts ("MTProto transport error -404",
+/// "Transport error code: -404", "early eof", AUTH_KEY_*), case-insensitively.
+fn is_auth_refresh_error(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("early eof") || m.contains("transport error") || m.contains("auth_key")
+}
+
+/// Whether a failed getFile at `offset` should be treated as "past end of file".
+/// `OFFSET_INVALID` always counts; with a known file size, any error at or beyond the
+/// end is EOF rather than a failure.
+fn is_past_eof_error(msg: &str, offset: i64, expected_size: Option<u64>) -> bool {
+    msg.contains("OFFSET_INVALID")
+        || expected_size.map_or(false, |sz| offset >= 0 && offset as u64 >= sz)
+}
+
 /// Downloads a large file (up to 2000 MB / 2 GB) directly from Telegram MTProto 2.0 servers
 /// using multi-worker parallel chunk streaming with constant O(1) RAM.
 pub async fn download_large_file_via_mtproto(
@@ -198,6 +214,20 @@ pub async fn download_large_file_via_mtproto(
     bot_token: &str,
     file_id_str: &str,
     destination_dir: &Path,
+) -> Result<(PathBuf, u64), Error> {
+    download_large_file_via_mtproto_sized(api_id, api_hash, bot_token, file_id_str, destination_dir, None).await
+}
+
+/// Same as [`download_large_file_via_mtproto`], but with the known file size (Bot API
+/// `file_size`) when available: workers then never probe past the end, any error beyond
+/// the end counts as EOF, and the final byte count is verified against it.
+pub async fn download_large_file_via_mtproto_sized(
+    api_id: i32,
+    api_hash: &str,
+    bot_token: &str,
+    file_id_str: &str,
+    destination_dir: &Path,
+    expected_size: Option<u64>,
 ) -> Result<(PathBuf, u64), Error> {
     let loc = decode_file_id(file_id_str).ok_or_else(|| {
         Error::new(
@@ -268,7 +298,7 @@ pub async fn download_large_file_via_mtproto(
                     return Err(e);
                 }
                 // If cached auth failed or dropped connection, refresh authorization once
-                if !refreshed_auth && (err_msg.contains("early eof") || err_msg.contains("TransportError") || err_msg.contains("AUTH_KEY")) {
+                if !refreshed_auth && (is_auth_refresh_error(&err_msg)) {
                     refreshed_auth = true;
                     // Refresh on the DC we are currently on (may differ from loc.dc_id after a migration)
                     let cur_dc = main_conn.dc_id;
@@ -397,6 +427,12 @@ pub async fn download_large_file_via_mtproto(
                 }
                 let part_idx = next_part_clone.fetch_add(1, Ordering::Relaxed);
                 let offset = (part_idx * CHUNK_SIZE) as i64;
+                if expected_size.map_or(false, |sz| offset as u64 >= sz) {
+                    // Known size: part 0..N-1 cover the file; no probe past the end.
+                    eof_clone.store(true, Ordering::Relaxed);
+                    let _ = tx_clone.send((part_idx, Vec::new(), true)).await;
+                    break;
+                }
                 let q = build_get_file_query(&loc_clone, offset, CHUNK_SIZE as i32);
 
                 let mut chunk_res = None;
@@ -409,7 +445,7 @@ pub async fn download_large_file_via_mtproto(
                         Err(e) => {
                             let msg = e.to_string();
                             tracing::warn!("[dl] part {} attempt {} error: {}", part_idx, attempt, msg);
-                            if msg.contains("OFFSET_INVALID") {
+                            if is_past_eof_error(&msg, offset, expected_size) {
                                 eof_clone.store(true, Ordering::Relaxed);
                                 let _ = tx_clone.send((part_idx, Vec::new(), true)).await;
                                 return Ok(());
@@ -481,12 +517,15 @@ pub async fn download_large_file_via_mtproto(
         }
         if first_err.is_some() {
             worker_set.abort_all();
+            // Wait for the aborted workers (cancellation errors are expected) before cleanup.
+            while worker_set.join_next().await.is_some() {}
             break;
         }
     }
 
     if let Some(e) = first_err {
         writer_handle.abort();
+        let _ = writer_handle.await; // Cancelled is expected; ensures the file handle is closed
         let _ = fs::remove_file(&part_path).await;
         return Err(e);
     }
@@ -502,6 +541,16 @@ pub async fn download_large_file_via_mtproto(
             return Err(Error::new(ErrorKind::Other, format!("Writer panicked: {e}")));
         }
     };
+
+    if let Some(sz) = expected_size {
+        if total_downloaded != sz {
+            let _ = fs::remove_file(&part_path).await;
+            return Err(Error::new(
+                ErrorKind::UnexpectedEof,
+                format!("Downloaded {} bytes but expected {}", total_downloaded, sz),
+            ));
+        }
+    }
 
     // Atomically move verified complete file to target destination
     fs::rename(&part_path, &target_path).await?;
@@ -520,6 +569,23 @@ pub async fn download_large_file_via_mtproto(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_refresh_matches_real_error_texts() {
+        assert!(is_auth_refresh_error("MTProto transport error -404"));
+        assert!(is_auth_refresh_error("Transport error code: -404"));
+        assert!(is_auth_refresh_error("early eof"));
+        assert!(is_auth_refresh_error("AUTH_KEY_UNREGISTERED"));
+        assert!(!is_auth_refresh_error("FLOOD_WAIT_5"));
+    }
+
+    #[test]
+    fn past_eof_detection() {
+        assert!(is_past_eof_error("RPC error OFFSET_INVALID", 0, None));
+        assert!(!is_past_eof_error("BAD_REQUEST", 1 << 20, None));
+        assert!(is_past_eof_error("BAD_REQUEST", 1 << 20, Some(1 << 20)));
+        assert!(!is_past_eof_error("BAD_REQUEST", 0, Some(1 << 20)));
+    }
 
     #[test]
     fn test_decode_real_file_id() {
