@@ -6,7 +6,6 @@ pub mod handlers;
 pub mod logging;
 pub mod models;
 pub mod mtproto;
-pub mod query;
 pub mod server;
 pub mod stats;
 pub mod storage;

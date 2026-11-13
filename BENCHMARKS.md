@@ -288,7 +288,7 @@ Reproduce: `bench/build.sh` on the commit, then `bench/webhook.sh <dir>` three t
 `flock /tmp/bench.lock`; allocations with the `heap.sh` method (heaptrack, N = 5000 and 25000) but
 driving `setWebhook` + the mock `getUpdates` instead of `sendMessage` (`bench/heap_webhook.sh`).
 
-## Round 4C results (MTProto layer, `src/mtproto/**`)
+## 10. Round 4C results (MTProto layer, `src/mtproto/**`)
 
 Measured with the ignored tests in `src/mtproto/bench_tests.rs` against an in-process loopback mock DC
 (`src/mtproto/mock_dc.rs`: independent reference AES-IGE, its threads excluded from allocation and CPU
