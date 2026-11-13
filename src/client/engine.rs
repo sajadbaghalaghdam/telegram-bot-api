@@ -1809,7 +1809,17 @@ pub fn media_attrs_for(
     } else {
         (num("width"), num("height"))
     };
-    MediaAttrs { kind, duration: num("duration"), width, height }
+    // C++ to_bool: "true" / "yes" / "1" (case-insensitive, trimmed); JSON booleans are accepted too.
+    let supports_streaming = fields
+        .and_then(|m| m.get("supports_streaming"))
+        .map(|v| match v {
+            Value::Bool(b) => *b,
+            Value::String(s) => matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1"),
+            Value::Number(n) => n.as_i64() == Some(1),
+            _ => false,
+        })
+        .unwrap_or(false);
+    MediaAttrs { kind, duration: num("duration"), width, height, supports_streaming }
 }
 
 /// Pure token validation matching C++ ClientManager::send: structural problems and out-of-range ids -> 401,
@@ -1937,6 +1947,12 @@ mod media_attr_tests {
             serde_json::from_str(r#"{"duration":"7","width":640,"height":480}"#).unwrap();
         let a = media_attrs_for("sendVideo", Some(&m));
         assert_eq!((a.kind, a.duration, a.width, a.height), (MediaKind::Video, 7, 640, 480));
+        assert!(!a.supports_streaming);
+        for (raw, want) in [("true", true), ("\"Yes\"", true), ("\"1\"", true), ("\"false\"", false), ("false", false), ("\"0\"", false)] {
+            let m: serde_json::Map<String, Value> =
+                serde_json::from_str(&format!("{{\"supports_streaming\":{raw}}}")).unwrap();
+            assert_eq!(media_attrs_for("sendVideo", Some(&m)).supports_streaming, want, "{raw}");
+        }
         assert_eq!(media_attrs_for("sendDocument", Some(&m)).kind, MediaKind::Document);
         assert_eq!(media_attrs_for("sendVoice", None).kind, MediaKind::Voice);
         assert_eq!(media_attrs_for("sendVideoNote", None).kind, MediaKind::VideoNote);
