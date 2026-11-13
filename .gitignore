@@ -28,3 +28,6 @@ __pycache__/
 .idea/
 .vscode/
 *.swp
+
+# Release bundles are committed on purpose
+!releases/*.zip

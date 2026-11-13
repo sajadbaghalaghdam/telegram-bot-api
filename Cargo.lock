@@ -1454,7 +1454,7 @@ dependencies = [
 
 [[package]]
 name = "telegram-bot-api-rs"
-version = "1.0.7"
+version = "1.1.0"
 dependencies = [
  "aes",
  "axum",
