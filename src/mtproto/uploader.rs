@@ -700,9 +700,11 @@ pub async fn resolve_input_peer(
         let resp = conn.rpc_call(&req).await.map_err(|e| {
             Error::new(ErrorKind::NotFound, format!("Failed to resolve user {}: {}", chat_id, e))
         })?;
-        let access_hash = extract_user_access_hash(&resp, chat_id).ok_or_else(|| {
-            Error::new(ErrorKind::NotFound, format!("access_hash for user {} not found", chat_id))
-        })?;
+        // Bots may address users/channels with access_hash 0 (TDLib does the same).
+        let access_hash = extract_user_access_hash(&resp, chat_id).unwrap_or_else(|| {
+            tracing::warn!("[upload] access_hash for user {} not found in response, using 0", chat_id);
+            0
+        });
 
         let mut peer = BytesMut::with_capacity(20);
         write_int(&mut peer, 0xdde8a54cu32 as i32); // inputPeerUser#dde8a54c
@@ -722,9 +724,10 @@ pub async fn resolve_input_peer(
         let resp = conn.rpc_call(&req).await.map_err(|e| {
             Error::new(ErrorKind::NotFound, format!("Failed to resolve channel {}: {}", channel_id, e))
         })?;
-        let access_hash = extract_channel_access_hash(&resp, channel_id).ok_or_else(|| {
-            Error::new(ErrorKind::NotFound, format!("access_hash for channel {} not found", channel_id))
-        })?;
+        let access_hash = extract_channel_access_hash(&resp, channel_id).unwrap_or_else(|| {
+            tracing::warn!("[upload] access_hash for channel {} not found in response, using 0", channel_id);
+            0
+        });
 
         let mut peer = BytesMut::with_capacity(20);
         write_int(&mut peer, 0x27bcbbfcu32 as i32); // inputPeerChannel#27bcbbfc
@@ -760,8 +763,10 @@ async fn resolve_username_mtproto(
 
     match peer_ctor {
         0x59511722 => {
-            let ah = extract_user_access_hash(&resp, peer_id)
-                .ok_or_else(|| Error::new(ErrorKind::NotFound, "access_hash for resolved user not found"))?;
+            let ah = extract_user_access_hash(&resp, peer_id).unwrap_or_else(|| {
+                tracing::warn!("[upload] access_hash for resolved user {} not found, using 0", peer_id);
+                0
+            });
             let mut peer = BytesMut::with_capacity(20);
             write_int(&mut peer, 0xdde8a54cu32 as i32);
             write_long(&mut peer, peer_id);
@@ -769,8 +774,10 @@ async fn resolve_username_mtproto(
             Ok(peer)
         }
         0xa2a5371e => {
-            let ah = extract_channel_access_hash(&resp, peer_id)
-                .ok_or_else(|| Error::new(ErrorKind::NotFound, "access_hash for resolved channel not found"))?;
+            let ah = extract_channel_access_hash(&resp, peer_id).unwrap_or_else(|| {
+                tracing::warn!("[upload] access_hash for resolved channel {} not found, using 0", peer_id);
+                0
+            });
             let mut peer = BytesMut::with_capacity(20);
             write_int(&mut peer, 0x27bcbbfcu32 as i32);
             write_long(&mut peer, peer_id);
@@ -844,8 +851,17 @@ pub struct MediaAttrs {
 /// Maximum upload size: 4000 parts of 512 KiB (2000 MiB), as in TDLib.
 const MAX_UPLOAD_PARTS: usize = 4000;
 
-/// Writes the `attributes` vector (filename plus kind-specific attribute) and returns the
-/// document flags to use.
+/// `inputMediaUploadedDocument` flags for a media kind. `force_file` (bit 4) makes Telegram
+/// treat the upload as a plain file, so it is set only for `MediaKind::Document`; typed media
+/// (video/audio/voice/animation) must not carry it or they would be shown as documents.
+/// `supports_streaming` is an attribute-level flag written by `write_document_attributes`.
+/// `nosound_video` (bit 3) is deliberately not set: the audio presence of the file is unknown.
+fn document_media_flags(kind: MediaKind) -> i32 {
+    if kind == MediaKind::Document { 1 << 4 } else { 0 }
+}
+
+/// Writes the `attributes` vector (filename plus kind-specific attribute). The media flags
+/// are computed separately by [`document_media_flags`] because they precede the file in the TL.
 fn write_document_attributes(buf: &mut BytesMut, file_name: &str, attrs: &MediaAttrs) {
     let mut count = 1;
     let extra = attrs.kind != MediaKind::Document;
@@ -971,12 +987,12 @@ pub async fn upload_and_send_large_file_typed(
     let next_part = Arc::new(AtomicUsize::new(0));
     let path_buf = file_path.to_path_buf();
 
-    let mut handles = Vec::with_capacity(num_workers);
+    let mut worker_set = tokio::task::JoinSet::new();
     for _worker_idx in 0..num_workers {
         let next_part_clone = Arc::clone(&next_part);
         let path_clone = path_buf.clone();
 
-        handles.push(tokio::spawn(async move {
+        worker_set.spawn(async move {
             // Share the already-authorized auth_key with a unique session_id (zero extra DH handshakes or auth calls!)
             let mut worker_conn = MtProtoConnection::connect_with_auth(shared_auth, api_id).await?;
             let mut file = File::open(&path_clone).await?;
@@ -1051,31 +1067,29 @@ pub async fn upload_and_send_large_file_typed(
             }
 
             Ok::<(), Error>(())
-        }));
+        });
     }
 
     // Fail fast: on the first worker error, abort the remaining workers instead of letting
     // them keep uploading parts of a doomed file.
     let mut first_err: Option<Error> = None;
-    for (idx, h) in handles.iter_mut().enumerate() {
-        match h.await {
+    while let Some(joined) = worker_set.join_next().await {
+        match joined {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                first_err = Some(e);
-            }
+            Ok(Err(e)) => first_err = Some(e),
+            Err(e) if e.is_cancelled() => {}
             Err(e) => {
                 first_err = Some(Error::new(ErrorKind::Other, format!("Upload worker panicked: {}", e)));
             }
         }
         if first_err.is_some() {
-            tracing::error!("[upload] worker {} failed, aborting remaining workers", idx);
+            tracing::error!("[upload] a worker failed, aborting remaining workers");
+            worker_set.abort_all();
+            while worker_set.join_next().await.is_some() {}
             break;
         }
     }
     if let Some(e) = first_err {
-        for h in &handles {
-            h.abort();
-        }
         return Err(e);
     }
 
@@ -1091,7 +1105,7 @@ pub async fn upload_and_send_large_file_typed(
 
     // inputMediaUploadedDocument#37c9330
     write_int(&mut send_req, 0x037c9330u32 as i32);
-    write_int(&mut send_req, 1 << 4); // flags: force_file (bit 4)
+    write_int(&mut send_req, document_media_flags(media_attrs.kind)); // force_file only for plain documents
     if is_big {
         // inputFileBig#fa4f0bb5 id:long parts:int name:string
         write_int(&mut send_req, 0xfa4f0bb5u32 as i32);
@@ -1447,6 +1461,27 @@ mod tests {
 #[cfg(test)]
 mod attr_tests {
     use super::*;
+
+    #[test]
+    fn extract_user_hash_requires_flag_and_id() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0x31774388u32.to_le_bytes());
+        b.extend_from_slice(&1i32.to_le_bytes()); // flags: access_hash present
+        b.extend_from_slice(&0i32.to_le_bytes()); // flags2
+        b.extend_from_slice(&42i64.to_le_bytes());
+        b.extend_from_slice(&777i64.to_le_bytes());
+        b.extend_from_slice(&[0u8; 16]);
+        assert_eq!(extract_user_access_hash(&b, 42), Some(777));
+        assert_eq!(extract_user_access_hash(&b, 43), None);
+    }
+
+    #[test]
+    fn media_flags_force_file_only_for_documents() {
+        assert_eq!(document_media_flags(MediaKind::Document), 1 << 4);
+        for k in [MediaKind::Video, MediaKind::VideoNote, MediaKind::Animation, MediaKind::Audio, MediaKind::Voice] {
+            assert_eq!(document_media_flags(k), 0);
+        }
+    }
 
     #[test]
     fn document_attributes_by_kind() {
