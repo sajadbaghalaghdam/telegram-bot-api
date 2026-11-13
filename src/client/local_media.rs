@@ -13,7 +13,8 @@ use tokio::fs;
 use super::engine::TelegramEngine;
 use super::relay::{Method, RelayCall};
 use super::upload::LargeUpload;
-use crate::error::{TelegramError, TelegramResult};
+use super::upstream::send_bytes;
+use crate::error::TelegramResult;
 
 /// Media field names in Telegram Bot API that may reference a local file path in `--local` mode
 const MEDIA_FIELDS: &[&str] = &[
@@ -221,16 +222,7 @@ impl TelegramEngine {
             };
             form = form.text(k, text);
         }
-        let resp = self
-            .client
-            .post(url)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?;
-        resp.bytes()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Read error: {e}")))
+        send_bytes(self.client.post(url).multipart(form)).await
     }
 }
 

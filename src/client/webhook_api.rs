@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::engine::TelegramEngine;
 use crate::error::{TelegramError, TelegramResult};
-use crate::models::{ApiResponse, SetWebhookRequest, WebhookInfo};
+use crate::models::{SetWebhookRequest, WebhookInfo};
 
 impl TelegramEngine {
     /// Parses TDLib `webhooks_db.binlog` binary records to extract the latest `(token, webhook_url)` per bot
@@ -70,26 +70,8 @@ impl TelegramEngine {
     /// Asks the upstream Bot API to delete the cloud webhook (so getUpdates works); upstream
     /// errors are returned as-is.
     pub async fn delete_upstream_webhook(&self, token: &str, drop_pending_updates: bool) -> TelegramResult<()> {
-        let url = format!("{}/bot{token}/deleteWebhook", self.upstream_base_url);
-        let drop_param = if drop_pending_updates { "?drop_pending_updates=true" } else { "" };
-        let resp: ApiResponse<bool> = self
-            .client
-            .post(format!("{url}{drop_param}"))
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-        if !resp.ok {
-            return Err(TelegramError::ApiError {
-                code: resp.error_code.unwrap_or(400),
-                description: resp
-                    .description
-                    .unwrap_or_else(|| "Failed to delete the upstream webhook".to_string()),
-                parameters: resp.parameters,
-            });
-        }
+        let req = self.delete_webhook_request(token, drop_pending_updates);
+        self.call_upstream::<bool>(req, "Failed to delete the upstream webhook").await?;
         Ok(())
     }
 
@@ -178,26 +160,10 @@ impl TelegramEngine {
                 self.client.post(target).json(&fwd)
             }
         };
-        let resp: ApiResponse<bool> = builder
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        if !resp.ok {
-            return Err(TelegramError::ApiError {
-                code: resp.error_code.unwrap_or(400),
-                description: resp
-                    .description
-                    .unwrap_or_else(|| "Failed to set webhook".to_string()),
-                parameters: resp.parameters,
-            });
-        }
+        let result = self.call_upstream::<bool>(builder, "Failed to set webhook").await?;
         self.stop_webhook_worker(token);
         self.storage.delete_webhook(token).await;
-        Ok(resp.result.unwrap_or(false))
+        Ok(result.unwrap_or(false))
     }
 
     /// Execute deleteWebhook and remove from SQLite WAL + stop local webhook worker
@@ -205,33 +171,9 @@ impl TelegramEngine {
         self.stop_webhook_worker(token);
         self.storage.delete_webhook(token).await;
 
-        let url = format!("{}/bot{token}/deleteWebhook", self.upstream_base_url);
-        let drop_param = if drop_pending_updates {
-            "?drop_pending_updates=true"
-        } else {
-            ""
-        };
-        let resp: ApiResponse<bool> = self
-            .client
-            .post(format!("{}{}", url, drop_param))
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        if !resp.ok {
-            return Err(TelegramError::ApiError {
-                code: resp.error_code.unwrap_or(400),
-                description: resp
-                    .description
-                    .unwrap_or_else(|| "Failed to delete webhook".to_string()),
-                parameters: resp.parameters,
-            });
-        }
-
-        Ok(resp.result.unwrap_or(true))
+        let req = self.delete_webhook_request(token, drop_pending_updates);
+        let result = self.call_upstream::<bool>(req, "Failed to delete webhook").await?;
+        Ok(result.unwrap_or(true))
     }
 
     /// Execute getWebhookInfo. Locally delivered webhooks are answered from storage + worker
@@ -239,51 +181,30 @@ impl TelegramEngine {
     pub async fn get_webhook_info(&self, token: &str) -> TelegramResult<WebhookInfo> {
         if self.local_mode
             && let Some(wh) = self.storage.get_webhook(token).await
-                && super::webhook::should_restore(true, &wh.url) {
-                    let (pending, err_date, err_msg) = self
-                        .webhook_states
-                        .get(token)
-                        .map(|s| s.snapshot())
-                        .unwrap_or((0, None, None));
-                    return Ok(WebhookInfo {
-                        url: wh.url,
-                        has_custom_certificate: false,
-                        pending_update_count: pending.min(i32::MAX as i64) as i32,
-                        ip_address: wh.ip_address,
-                        last_error_date: err_date.map(|d| d as i32),
-                        last_error_message: err_msg,
-                        last_synchronization_error_date: None,
-                        max_connections: Some(wh.max_connections),
-                        allowed_updates: wh.allowed_updates,
-                    });
-                }
-
-        let url = format!("{}/bot{token}/getWebhookInfo", self.upstream_base_url);
-        let resp: ApiResponse<WebhookInfo> = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        if !resp.ok {
-            return Err(TelegramError::ApiError {
-                code: resp.error_code.unwrap_or(400),
-                description: resp
-                    .description
-                    .unwrap_or_else(|| "Unknown error".to_string()),
-                parameters: resp.parameters,
+            && super::webhook::should_restore(true, &wh.url)
+        {
+            let (pending, err_date, err_msg) = self
+                .webhook_states
+                .get(token)
+                .map(|s| s.snapshot())
+                .unwrap_or((0, None, None));
+            return Ok(WebhookInfo {
+                url: wh.url,
+                has_custom_certificate: false,
+                pending_update_count: pending.min(i32::MAX as i64) as i32,
+                ip_address: wh.ip_address,
+                last_error_date: err_date.map(|d| d as i32),
+                last_error_message: err_msg,
+                last_synchronization_error_date: None,
+                max_connections: Some(wh.max_connections),
+                allowed_updates: wh.allowed_updates,
             });
         }
 
-        resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-            )
-        })
+        let url = format!("{}/bot{token}/getWebhookInfo", self.upstream_base_url);
+        self.call_upstream::<WebhookInfo>(self.client.get(url), "Unknown error")
+            .await?
+            .ok_or_else(|| TelegramError::BadRequest("Unknown error".to_string()))
     }
 }
 

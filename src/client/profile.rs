@@ -1,6 +1,7 @@
 //! getMe / bot profile: storage-backed cache in front of upstream `getMe`.
 
 use super::engine::TelegramEngine;
+use super::upstream::send_json;
 use crate::error::{TelegramError, TelegramResult};
 use crate::models::{ApiResponse, User};
 
@@ -35,15 +36,7 @@ impl TelegramEngine {
     pub async fn get_me_fresh(&self, token: &str) -> TelegramResult<User> {
 
         let url = format!("{}/bot{token}/getMe", self.upstream_base_url);
-        let resp: ApiResponse<User> = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
+        let resp: ApiResponse<User> = send_json(self.client.get(&url)).await?;
 
         let user = match (resp.ok, resp.result) {
             (true, Some(user)) => user,

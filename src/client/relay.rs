@@ -9,6 +9,7 @@ use bytes::Bytes;
 
 use super::engine::TelegramEngine;
 use super::reply::{Relayed, ReplyHead};
+use super::upstream::send_bytes;
 use super::util::ascii_lower;
 use crate::error::{TelegramError, TelegramResult};
 use crate::models::ApiResponse;
@@ -178,15 +179,7 @@ impl TelegramEngine {
     /// logOut: relay the upstream result; only tear down local state once upstream confirmed it.
     async fn relay_log_out(&self, token: &str) -> TelegramResult<Bytes> {
         let url = self.upstream_url(token, "logOut", None);
-        let out = self
-            .client
-            .post(url)
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .bytes()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Read error: {e}")))?;
+        let out = send_bytes(self.client.post(url)).await?;
         if ReplyHead::parse(&out).ok == Some(true) {
             self.stop_webhook_worker(token);
             self.storage.delete_webhook(token).await;
@@ -260,13 +253,7 @@ impl TelegramEngine {
                 .header("content-type", "application/json")
                 .body(body)
         };
-        let resp = req_builder
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?;
-        resp.bytes()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Read error: {e}")))
+        send_bytes(req_builder).await
     }
 
     /// Upstream URL of a bot method: `<base>/bot<token>/<method>[?query]`.

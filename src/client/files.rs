@@ -9,6 +9,7 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 
 use super::engine::{TelegramEngine, STREAM_BUFFER_SIZE};
+use super::upstream::send_json;
 use super::util::TempFile;
 use crate::error::{TelegramError, TelegramResult};
 use crate::models::{ApiResponse, File};
@@ -99,16 +100,7 @@ impl TelegramEngine {
         }
 
         let url = format!("{}/bot{token}/getFile", self.upstream_base_url);
-        let resp: ApiResponse<File> = self
-            .client
-            .get(&url)
-            .query(&[("file_id", file_id)])
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
+        let resp: ApiResponse<File> = send_json(self.client.get(&url).query(&[("file_id", file_id)])).await?;
 
         if !resp.ok {
             let too_big = resp
