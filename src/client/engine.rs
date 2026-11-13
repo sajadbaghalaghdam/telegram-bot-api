@@ -153,29 +153,10 @@ impl TelegramEngine {
             .max(self.storage.cached_bots_count())
     }
 
-    /// Checks `--filter <remainder>/<modulo>` matching C++ ClientManager::get_client (`bot_user_id % modulo == remainder`)
+    /// Validates the token like C++ ClientManager::send (401 invalid token, 421 forbidden by `--filter`)
     #[inline]
     pub fn check_token_filter(&self, token: &str) -> Result<(), TelegramError> {
-        if let Some((rem, modulo)) = self.token_filter {
-            if let Some((id_str, _)) = token.split_once(':') {
-                if let Ok(bot_id) = id_str.parse::<u64>() {
-                    if bot_id % modulo != rem {
-                        return Err(TelegramError::MisdirectedRequest(
-                            "forbidden token specified".to_string(),
-                        ));
-                    }
-                } else {
-                    return Err(TelegramError::Unauthorized(
-                        "invalid token specified".to_string(),
-                    ));
-                }
-            } else {
-                return Err(TelegramError::Unauthorized(
-                    "invalid token specified".to_string(),
-                ));
-            }
-        }
-        Ok(())
+        validate_token(token, self.token_filter)
     }
 
     #[inline]
@@ -681,6 +662,12 @@ impl TelegramEngine {
         if let Some(cached_user) = self.storage.get_bot(token).await {
             return Ok((*cached_user).clone());
         }
+        self.get_me_fresh(token).await
+    }
+
+    /// getMe straight from upstream (validates the token), refreshing the storage cache
+    pub async fn get_me_fresh(&self, token: &str) -> TelegramResult<User> {
+        self.record_active_bot(token);
 
         let url = format!("{}/bot{token}/getMe", self.upstream_base_url);
         let resp: ApiResponse<User> = self
@@ -693,11 +680,18 @@ impl TelegramEngine {
             .await
             .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
 
-        let user = resp.result.ok_or_else(|| {
-            TelegramError::Unauthorized(
-                resp.description.unwrap_or_else(|| "Unauthorized".to_string()),
-            )
-        })?;
+        let user = match (resp.ok, resp.result) {
+            (true, Some(user)) => user,
+            _ => {
+                return Err(TelegramError::ApiError {
+                    code: resp.error_code.unwrap_or(401),
+                    description: resp
+                        .description
+                        .unwrap_or_else(|| "Unauthorized".to_string()),
+                    parameters: resp.parameters,
+                })
+            }
+        };
 
         self.storage.save_bot(token, &user).await;
         Ok(user)
@@ -1166,13 +1160,7 @@ impl TelegramEngine {
             ));
         }
 
-        let is_local_url = self.local_mode
-            && (req.url.starts_with("http://127.0.0.1")
-                || req.url.starts_with("http://localhost")
-                || req.url.starts_with("http://[::1]")
-                || req.url.starts_with("http://10.")
-                || req.url.starts_with("http://192.168.")
-                || (16..=31).any(|b| req.url.starts_with(&format!("http://172.{b}."))));
+        let is_local_url = self.local_mode && is_local_webhook_url(&req.url);
 
         if is_local_url {
             // Ensure cloud webhook is deleted so local getUpdates worker can receive updates
@@ -1324,30 +1312,27 @@ impl TelegramEngine {
         })
     }
 
-    /// Checks if a file path exists on local disk in local mode
+    /// Resolves a served file path inside the bot's own working directory (local mode only).
+    /// Absolute paths (as returned by getFile in local mode) are accepted only if they stay
+    /// within `<dir>/<token>`; `..` traversal and symlink escapes are rejected.
     pub fn resolve_file_on_disk(&self, token: &str, file_path: &str) -> Option<PathBuf> {
         if !self.local_mode {
             return None;
         }
-        let cand_abs = PathBuf::from(file_path);
-        if cand_abs.is_absolute() && cand_abs.exists() && cand_abs.is_file() {
-            return Some(cand_abs);
-        }
-        let cand0 = self.dir.join(file_path);
-        if cand0.exists() && cand0.is_file() {
-            return Some(cand0);
-        }
-        let bot_folder = Self::bot_dir_name(token);
-        let cand1 = self.dir.join(&bot_folder).join(file_path);
-        if cand1.exists() && cand1.is_file() {
-            return Some(cand1);
-        }
-        let cand2 = self.dir.join(token.replace(':', "_")).join(file_path);
-        if cand2.exists() && cand2.is_file() {
-            return Some(cand2);
-        }
-        if cand_abs.exists() && cand_abs.is_file() {
-            return Some(cand_abs);
+        let roots = [
+            self.dir.join(Self::bot_dir_name(token)),
+            self.dir.join(token.replace(':', "_")),
+        ];
+        let requested = Path::new(file_path);
+        for root in &roots {
+            let cand = if requested.is_absolute() {
+                requested.to_path_buf()
+            } else {
+                root.join(requested)
+            };
+            if let Some(p) = confine_path(root, &cand) {
+                return Some(p);
+            }
         }
         None
     }
@@ -1358,37 +1343,13 @@ impl TelegramEngine {
         token: &str,
         file_path: &str,
     ) -> Result<(axum::body::Body, Option<u64>), TelegramError> {
-        if self.local_mode {
-            let bot_folder = Self::bot_dir_name(token);
-            let local_candidate = self.dir.join(&bot_folder).join(file_path);
-            if local_candidate.exists() && local_candidate.is_file() {
-                let file = fs::File::open(&local_candidate).await.map_err(|e| {
-                    TelegramError::Internal(format!("Failed to open local file: {e}"))
-                })?;
-                let len = file.metadata().await.ok().map(|m| m.len());
-                let stream = ReaderStream::with_capacity(file, STREAM_BUFFER_SIZE);
-                return Ok((axum::body::Body::from_stream(stream), len));
-            }
-
-            let sanitized_candidate = self.dir.join(token.replace(':', "_")).join(file_path);
-            if sanitized_candidate.exists() && sanitized_candidate.is_file() {
-                let file = fs::File::open(&sanitized_candidate).await.map_err(|e| {
-                    TelegramError::Internal(format!("Failed to open local file: {e}"))
-                })?;
-                let len = file.metadata().await.ok().map(|m| m.len());
-                let stream = ReaderStream::with_capacity(file, STREAM_BUFFER_SIZE);
-                return Ok((axum::body::Body::from_stream(stream), len));
-            }
-
-            let direct_candidate = PathBuf::from(file_path);
-            if direct_candidate.exists() && direct_candidate.is_file() {
-                let file = fs::File::open(&direct_candidate).await.map_err(|e| {
-                    TelegramError::Internal(format!("Failed to open file: {e}"))
-                })?;
-                let len = file.metadata().await.ok().map(|m| m.len());
-                let stream = ReaderStream::with_capacity(file, STREAM_BUFFER_SIZE);
-                return Ok((axum::body::Body::from_stream(stream), len));
-            }
+        if let Some(local_path) = self.resolve_file_on_disk(token, file_path) {
+            let file = fs::File::open(&local_path)
+                .await
+                .map_err(|e| TelegramError::Internal(format!("Failed to open local file: {e}")))?;
+            let len = file.metadata().await.ok().map(|m| m.len());
+            let stream = ReaderStream::with_capacity(file, STREAM_BUFFER_SIZE);
+            return Ok((axum::body::Body::from_stream(stream), len));
         }
 
         let url = format!("{}/file/bot{token}/{file_path}", self.upstream_base_url);
@@ -1400,10 +1361,12 @@ impl TelegramEngine {
             .map_err(|e| TelegramError::Internal(format!("File download network error: {e}")))?;
 
         if !resp.status().is_success() {
-            return Err(TelegramError::BadRequest(format!(
-                "File download failed: status {}",
-                resp.status()
-            )));
+            let code = resp.status().as_u16();
+            return Err(TelegramError::ApiError {
+                code,
+                description: format!("File download failed: status {}", resp.status()),
+                parameters: None,
+            });
         }
 
         let content_len = resp.content_length();
@@ -1424,6 +1387,12 @@ impl TelegramEngine {
         self.check_token_filter(token)?;
         self.record_active_bot(token);
         let method_lower = method.to_ascii_lowercase();
+
+        if method_lower == "getupdates" && self.webhook_workers.contains_key(token) {
+            return Err(TelegramError::Conflict(
+                "can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first".to_string(),
+            ));
+        }
 
         // 1. Handle setWebhook / deleteWebhook / getWebhookInfo / getFile specially
         if method_lower == "setwebhook" {
@@ -1493,14 +1462,27 @@ impl TelegramEngine {
         }
 
         if method_lower == "logout" {
-            self.stop_webhook_worker(token);
-            self.storage.delete_webhook(token).await;
-            crate::mtproto::uploader::invalidate_bot_auth(token);
+            // Relay the upstream result; only tear down local state once upstream confirmed logOut.
             let url = format!("{}/bot{token}/logOut", self.upstream_base_url);
-            let _ = self.client.post(&url).send().await;
-            return Ok(Bytes::from_static(
-                br#"{"ok":true,"result":true,"description":"Logged out"}"#,
-            ));
+            let out = self
+                .client
+                .post(&url)
+                .send()
+                .await
+                .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
+                .bytes()
+                .await
+                .map_err(|e| TelegramError::Internal(format!("Read error: {e}")))?;
+            let ok = serde_json::from_slice::<Value>(&out)
+                .ok()
+                .and_then(|j| j.get("ok").and_then(|v| v.as_bool()))
+                .unwrap_or(false);
+            if ok {
+                self.stop_webhook_worker(token);
+                self.storage.delete_webhook(token).await;
+                crate::mtproto::uploader::invalidate_bot_auth(token);
+            }
+            return Ok(out);
         }
 
         if method_lower == "deletewebhook" {
@@ -1871,5 +1853,112 @@ impl TelegramEngine {
             .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
 
         Ok(resp)
+    }
+}
+
+/// Pure token validation matching C++ ClientManager::send: structural problems and out-of-range ids -> 401,
+/// ids rejected by `--filter <remainder>/<modulo>` -> 421.
+pub fn validate_token(token: &str, filter: Option<(u64, u64)>) -> Result<(), TelegramError> {
+    let invalid = || TelegramError::Unauthorized("invalid token specified".to_string());
+    if token.is_empty() || token.starts_with('0') || token.len() > 80 || token.contains('/') {
+        return Err(invalid());
+    }
+    let Some((id_str, _)) = token.split_once(':') else {
+        return Err(invalid());
+    };
+    let forbidden = || TelegramError::MisdirectedRequest("forbidden token specified".to_string());
+    let Ok(id) = id_str.parse::<i64>() else {
+        return Err(forbidden());
+    };
+    if let Some((rem, modulo)) = filter {
+        if modulo != 0 && (id.unsigned_abs() % modulo) != rem {
+            return Err(forbidden());
+        }
+    }
+    if id <= 0 || id >= (1i64 << 54) {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+
+    #[test]
+    fn token_validation() {
+        assert!(validate_token("123:abc", None).is_ok());
+        assert!(matches!(validate_token("abc", None), Err(TelegramError::Unauthorized(_))));
+        assert!(matches!(validate_token("0123:abc", None), Err(TelegramError::Unauthorized(_))));
+        assert!(matches!(validate_token("a/b:c", None), Err(TelegramError::Unauthorized(_))));
+        assert!(matches!(validate_token("12x:abc", None), Err(TelegramError::MisdirectedRequest(_))));
+        assert!(matches!(validate_token("123:abc", Some((0, 2))), Err(TelegramError::MisdirectedRequest(_))));
+        assert!(validate_token("124:abc", Some((0, 2))).is_ok());
+        assert!(matches!(validate_token("18014398509481984:a", None), Err(TelegramError::Unauthorized(_))));
+    }
+}
+
+/// Returns the canonical path of `cand` if it is an existing regular file inside `root`, else None.
+fn confine_path(root: &Path, cand: &Path) -> Option<PathBuf> {
+    let root = std::fs::canonicalize(root).ok()?;
+    let real = std::fs::canonicalize(cand).ok()?;
+    if real.starts_with(&root) && real.is_file() {
+        Some(real)
+    } else {
+        None
+    }
+}
+
+/// True if the webhook URL is a plain-http URL whose host is loopback / private (served by the local worker).
+pub fn is_local_webhook_url(url: &str) -> bool {
+    let Ok(u) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if u.scheme() != "http" {
+        return false;
+    }
+    let Some(host) = u.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_loopback() || ip.is_private(),
+        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+
+    #[test]
+    fn local_webhook_urls() {
+        assert!(is_local_webhook_url("http://127.0.0.1:8080/x"));
+        assert!(is_local_webhook_url("http://localhost/x"));
+        assert!(is_local_webhook_url("http://[::1]:1/"));
+        assert!(is_local_webhook_url("http://192.168.1.5/"));
+        assert!(is_local_webhook_url("http://172.20.0.2/"));
+        assert!(!is_local_webhook_url("http://172.32.0.2/"));
+        assert!(!is_local_webhook_url("http://localhost.evil.com/"));
+        assert!(!is_local_webhook_url("http://10.evil.com/"));
+        assert!(!is_local_webhook_url("http://example.com/"));
+        assert!(!is_local_webhook_url("https://127.0.0.1/"));
+    }
+
+    #[test]
+    fn confine() {
+        let base = std::env::temp_dir().join(format!("confine_{}", std::process::id()));
+        let root = base.join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), b"x").unwrap();
+        std::fs::write(base.join("secret"), b"x").unwrap();
+        assert!(confine_path(&root, &root.join("a.txt")).is_some());
+        assert!(confine_path(&root, &root.join("../secret")).is_none());
+        assert!(confine_path(&root, &base.join("secret")).is_none());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

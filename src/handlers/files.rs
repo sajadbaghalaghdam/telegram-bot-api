@@ -91,6 +91,7 @@ pub async fn serve_file(
     State(state): State<AppState>,
 ) -> TelegramResult<Response> {
     let clean_token = token.strip_prefix("bot").unwrap_or(&token);
+    state.engine.check_token_filter(clean_token)?;
     let content_type = mime_guess::from_path(&file_path)
         .first_or_octet_stream()
         .as_ref()

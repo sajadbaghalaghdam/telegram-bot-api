@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use bytes::Bytes;
 use dashmap::DashMap;
 use crate::client::TelegramEngine;
@@ -13,7 +14,11 @@ pub struct BotSession {
     pub token: String,
     pub me: User,
     pub me_json_bytes: Bytes,
+    created: Instant,
 }
+
+/// Cached getMe sessions are re-validated against upstream after this long.
+const SESSION_TTL: Duration = Duration::from_secs(60);
 
 /// Lock-free sharded manager for multiple Bot sessions matching official ClientManager.h/ClientManager.cpp
 pub struct ClientManager {
@@ -32,11 +37,14 @@ impl ClientManager {
     /// Retrieves an existing bot session or initializes a new one with zero global lock contention
     pub async fn get_or_create(&self, token: &str) -> TelegramResult<Arc<BotSession>> {
         if let Some(session) = self.sessions.get(token) {
-            return Ok(Arc::clone(session.value()));
+            if session.created.elapsed() < SESSION_TTL {
+                return Ok(Arc::clone(session.value()));
+            }
         }
+        self.sessions.remove(token);
 
         // Fetch bot metadata (backed by SQLite WAL + L1 cache in engine)
-        let me = self.engine.get_me(token).await?;
+        let me = self.engine.get_me_fresh(token).await?;
         let envelope = ApiResponse::success(&me);
         let serialized = serde_json::to_vec(&envelope)
             .map_err(|e| TelegramError::Internal(format!("Serialization error: {e}")))?;
@@ -45,10 +53,24 @@ impl ClientManager {
             token: token.to_string(),
             me,
             me_json_bytes: Bytes::from(serialized),
+            created: Instant::now(),
         });
 
         if self.sessions.len() >= MAX_ACTIVE_SESSIONS {
-            self.sessions.clear();
+            let stale: Vec<String> = self
+                .sessions
+                .iter()
+                .filter(|e| e.value().created.elapsed() >= SESSION_TTL)
+                .map(|e| e.key().clone())
+                .collect();
+            for k in stale {
+                self.sessions.remove(&k);
+            }
+            if self.sessions.len() >= MAX_ACTIVE_SESSIONS {
+                if let Some(k) = self.sessions.iter().next().map(|e| e.key().clone()) {
+                    self.sessions.remove(&k);
+                }
+            }
         }
         self.sessions.insert(token.to_string(), Arc::clone(&session));
 

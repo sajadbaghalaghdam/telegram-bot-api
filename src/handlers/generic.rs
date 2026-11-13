@@ -22,6 +22,7 @@ pub async fn generic_post_handler(
     let clean_token = token.strip_prefix("bot").unwrap_or(&token);
 
     if method.eq_ignore_ascii_case("getme") {
+        state.engine.check_token_filter(clean_token)?;
         let session = state.client_manager.get_or_create(clean_token).await?;
         return Ok((
             StatusCode::OK,
