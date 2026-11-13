@@ -93,9 +93,9 @@ WorkingDirectory=$DATA_DIR
 ExecStart=$BIN_DEST --api-id=$API_ID --api-hash=$API_HASH --http-port=$HTTP_PORT --dir=$DATA_DIR --local
 Restart=always
 RestartSec=2s
-KillSignal=SIGKILL
+KillSignal=SIGTERM
 FinalKillSignal=SIGKILL
-TimeoutStopSec=5s
+TimeoutStopSec=15s
 LimitNOFILE=65535
 
 [Install]

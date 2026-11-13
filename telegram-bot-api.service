@@ -9,9 +9,9 @@ WorkingDirectory=/var/lib/telegram-bot-api
 ExecStart=/usr/local/bin/telegram-bot-api --api-id=YOUR_API_ID --api-hash=YOUR_API_HASH --http-port=8080 --dir=/var/lib/telegram-bot-api --local
 Restart=always
 RestartSec=2s
-KillSignal=SIGKILL
+KillSignal=SIGTERM
 FinalKillSignal=SIGKILL
-TimeoutStopSec=5s
+TimeoutStopSec=15s
 LimitNOFILE=65535
 
 [Install]

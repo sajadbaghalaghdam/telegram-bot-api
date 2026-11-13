@@ -32,6 +32,8 @@ enum WriteOp {
     UpsertFile { file_id: String, file_unique_id: String, file_size: Option<i64>, local_path: String, now: i64 },
     UpsertWebhook { token: String, record: WebhookRecord, now: i64 },
     DeleteWebhook { token: String },
+    /// Acknowledged once everything queued before it has been applied.
+    Barrier,
 }
 
 type Job = (WriteOp, oneshot::Sender<()>);
@@ -290,6 +292,7 @@ impl StorageEngine {
                 "delete webhook",
                 conn.prepare_cached("DELETE FROM webhooks WHERE token = ?1").and_then(|mut st| st.execute(params![token])),
             ),
+            WriteOp::Barrier => return,
         };
         if let Err(e) = res {
             tracing::error!("SQLite {what} failed: {e}");
@@ -304,6 +307,11 @@ impl StorageEngine {
             return;
         }
         let _ = ack_rx.await;
+    }
+
+    /// Waits until every write queued so far is on disk (used for graceful shutdown).
+    pub async fn flush(&self) {
+        self.write(WriteOp::Barrier).await;
     }
 
     /// Runs `f` on one of the read-only connections on the blocking pool.
@@ -636,6 +644,7 @@ mod tests {
         st.save_cached_file(&f).await;
         st.l1_files.clear();
         assert_eq!(st.get_cached_file("f").await.unwrap().file_unique_id, "u");
+        st.flush().await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -673,7 +682,8 @@ mod tests {
             st.save_bot("old", &user(1, "a")).await;
             st.save_bot("new", &user(2, "b")).await;
             st.save_webhook("w", "http://h", None, 40, None, None).await;
-                let db = raw(&dir);
+            st.flush().await;
+            let db = raw(&dir);
             let ancient = StorageEngine::now_unix() - ROW_RETENTION_SECS - 10;
             db.execute("UPDATE bots SET updated_at = ?1 WHERE token='old'", params![ancient]).unwrap();
             db.execute("UPDATE webhooks SET updated_at = ?1", params![ancient]).unwrap();

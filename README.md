@@ -142,6 +142,8 @@ Options:
   -V, --version                                  Print version
 ```
 
+On SIGTERM/SIGINT the server stops accepting connections, waits up to 10 s for open requests (long polls), stops its background tasks, flushes pending SQLite writes and exits with code 0. SIGUSR1 reopens the log file; SIGHUP is ignored.
+
 ---
 
 ## License
