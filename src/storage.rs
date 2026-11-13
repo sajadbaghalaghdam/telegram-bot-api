@@ -10,6 +10,8 @@ use crate::models::{File, User};
 
 const MAX_L1_CACHE_ENTRIES: usize = 2048;
 const READER_POOL_SIZE: usize = 4;
+/// Cached getMe profiles older than this are re-fetched from upstream.
+const BOT_PROFILE_TTL_SECS: i64 = 3600;
 
 /// High-performance Async SQLite WAL Storage Engine with bounded L1 DashMap cache.
 /// Separates 1 WAL Writer from N concurrent WAL Readers to maximize concurrency and minimize RAM.
@@ -17,7 +19,7 @@ pub struct StorageEngine {
     writer: Arc<Mutex<Connection>>,
     readers: Vec<Arc<Mutex<Connection>>>,
     reader_idx: AtomicUsize,
-    l1_bots: DashMap<String, Arc<User>>,
+    l1_bots: DashMap<String, (Arc<User>, i64)>,
     l1_files: DashMap<String, File>,
 }
 
@@ -116,17 +118,39 @@ impl StorageEngine {
         )
         .map_err(|e| TelegramError::Internal(format!("SQLite schema init error: {e}")))?;
 
-        // Ensure columns exist for upgraded databases
-        let _ = conn.execute("ALTER TABLE webhooks ADD COLUMN allowed_updates TEXT", []);
-        let _ = conn.execute("ALTER TABLE webhooks ADD COLUMN ip_address TEXT", []);
+        // Ensure columns exist for upgraded databases (only ignore "already exists", surface real errors)
+        for (col, ddl) in [
+            ("allowed_updates", "ALTER TABLE webhooks ADD COLUMN allowed_updates TEXT"),
+            ("ip_address", "ALTER TABLE webhooks ADD COLUMN ip_address TEXT"),
+        ] {
+            if !Self::column_exists(conn, "webhooks", col)? {
+                conn.execute(ddl, [])
+                    .map_err(|e| TelegramError::Internal(format!("SQLite migration error: {e}")))?;
+            }
+        }
 
         Ok(())
+    }
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> TelegramResult<bool> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(|e| TelegramError::Internal(format!("SQLite schema error: {e}")))?;
+        let names = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| TelegramError::Internal(format!("SQLite schema error: {e}")))?;
+        Ok(names.flatten().any(|n| n == column))
     }
 
     #[inline]
     fn next_reader(&self) -> Arc<Mutex<Connection>> {
         let idx = self.reader_idx.fetch_add(1, Ordering::Relaxed) % self.readers.len();
         Arc::clone(&self.readers[idx])
+    }
+
+    #[inline]
+    fn bot_fresh(updated_at: i64, now: i64) -> bool {
+        now - updated_at < BOT_PROFILE_TTL_SECS
     }
 
     #[inline]
@@ -140,8 +164,11 @@ impl StorageEngine {
     /// Retrieves cached Bot User profile from L1 DashMap or SQLite WAL reader pool.
     pub async fn get_bot(&self, token: &str) -> Option<Arc<User>> {
         if let Some(cached) = self.l1_bots.get(token) {
-            return Some(Arc::clone(cached.value()));
+            if Self::bot_fresh(cached.value().1, Self::now_unix()) {
+                return Some(Arc::clone(&cached.value().0));
+            }
         }
+        self.l1_bots.remove(token);
 
         let reader = self.next_reader();
         let token_owned = token.to_string();
@@ -149,9 +176,14 @@ impl StorageEngine {
         let user_opt = tokio::task::spawn_blocking(move || {
             let conn = reader.lock().ok()?;
             let mut stmt = conn
-                .prepare_cached("SELECT user_json FROM bots WHERE token = ?1")
+                .prepare_cached("SELECT user_json, updated_at FROM bots WHERE token = ?1")
                 .ok()?;
-            let json_str: String = stmt.query_row(params![token_owned], |row| row.get(0)).ok()?;
+            let (json_str, updated_at): (String, i64) = stmt
+                .query_row(params![token_owned], |row| Ok((row.get(0)?, row.get(1)?)))
+                .ok()?;
+            if !Self::bot_fresh(updated_at, Self::now_unix()) {
+                return None;
+            }
             serde_json::from_str::<User>(&json_str).ok()
         })
         .await
@@ -162,7 +194,7 @@ impl StorageEngine {
         if self.l1_bots.len() >= MAX_L1_CACHE_ENTRIES {
             self.l1_bots.clear();
         }
-        self.l1_bots.insert(token.to_string(), Arc::clone(&arc_user));
+        self.l1_bots.insert(token.to_string(), (Arc::clone(&arc_user), Self::now_unix()));
         Some(arc_user)
     }
 
@@ -172,7 +204,7 @@ impl StorageEngine {
         if self.l1_bots.len() >= MAX_L1_CACHE_ENTRIES {
             self.l1_bots.clear();
         }
-        self.l1_bots.insert(token.to_string(), Arc::clone(&arc_user));
+        self.l1_bots.insert(token.to_string(), (Arc::clone(&arc_user), Self::now_unix()));
 
         let writer = Arc::clone(&self.writer);
         let token_owned = token.to_string();
@@ -187,14 +219,19 @@ impl StorageEngine {
 
         let _ = tokio::task::spawn_blocking(move || {
             if let Ok(conn) = writer.lock() {
-                let _ = conn.execute(
+                if let Err(e) = conn.execute(
                     "INSERT INTO bots (token, bot_id, username, first_name, user_json, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                      ON CONFLICT(token) DO UPDATE SET
+                        bot_id = excluded.bot_id,
+                        username = excluded.username,
+                        first_name = excluded.first_name,
                         user_json = excluded.user_json,
                         updated_at = excluded.updated_at",
                     params![token_owned, bot_id, username, first_name, user_json, now],
-                );
+                ) {
+                    tracing::error!("SQLite save bot failed: {e}");
+                }
             }
         })
         .await;
@@ -268,7 +305,7 @@ impl StorageEngine {
 
         let _ = tokio::task::spawn_blocking(move || {
             if let Ok(conn) = writer.lock() {
-                let _ = conn.execute(
+                if let Err(e) = conn.execute(
                     "INSERT INTO file_cache (file_id, file_unique_id, file_size, local_path, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5)
                      ON CONFLICT(file_id) DO UPDATE SET
@@ -276,7 +313,9 @@ impl StorageEngine {
                         file_size = excluded.file_size,
                         updated_at = excluded.updated_at",
                     params![file_id, file_unique_id, file_size, path_owned, now],
-                );
+                ) {
+                    tracing::error!("SQLite save cached file failed: {e}");
+                }
             }
         })
         .await;
@@ -302,7 +341,7 @@ impl StorageEngine {
 
         let _ = tokio::task::spawn_blocking(move || {
             if let Ok(conn) = writer.lock() {
-                let _ = conn.execute(
+                if let Err(e) = conn.execute(
                     "INSERT INTO webhooks (token, url, secret_token, max_connections, allowed_updates, ip_address, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                      ON CONFLICT(token) DO UPDATE SET
@@ -313,7 +352,9 @@ impl StorageEngine {
                         ip_address = excluded.ip_address,
                         updated_at = excluded.updated_at",
                     params![token_owned, url_owned, secret_owned, max_conn, allowed_json, ip_owned, now],
-                );
+                ) {
+                    tracing::error!("SQLite save webhook failed: {e}");
+                }
             }
         })
         .await;
@@ -357,7 +398,9 @@ impl StorageEngine {
 
         let _ = tokio::task::spawn_blocking(move || {
             if let Ok(conn) = writer.lock() {
-                let _ = conn.execute("DELETE FROM webhooks WHERE token = ?1", params![token_owned]);
+                if let Err(e) = conn.execute("DELETE FROM webhooks WHERE token = ?1", params![token_owned]) {
+                    tracing::error!("SQLite delete webhook failed: {e}");
+                }
             }
         })
         .await;
@@ -402,5 +445,26 @@ impl StorageEngine {
     #[inline]
     pub fn cached_bots_count(&self) -> usize {
         self.l1_bots.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bot_ttl() {
+        assert!(StorageEngine::bot_fresh(1000, 1000 + BOT_PROFILE_TTL_SECS - 1));
+        assert!(!StorageEngine::bot_fresh(1000, 1000 + BOT_PROFILE_TTL_SECS));
+    }
+
+    #[test]
+    fn migration_adds_missing_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE webhooks (token TEXT PRIMARY KEY, url TEXT NOT NULL, secret_token TEXT, max_connections INTEGER NOT NULL DEFAULT 40, updated_at INTEGER NOT NULL);").unwrap();
+        StorageEngine::init_schema(&conn).unwrap();
+        assert!(StorageEngine::column_exists(&conn, "webhooks", "ip_address").unwrap());
+        assert!(StorageEngine::column_exists(&conn, "webhooks", "allowed_updates").unwrap());
+        StorageEngine::init_schema(&conn).unwrap(); // idempotent
     }
 }

@@ -13,7 +13,7 @@ pub async fn get_stats(State(state): State<AppState>) -> Response {
     state.stats.set_active_bots(active);
     let report = state.stats.to_report();
     (
-        [("content-type", "text/plain; charset=utf-8")],
+        [("content-type", "text/plain")],
         report,
     )
         .into_response()

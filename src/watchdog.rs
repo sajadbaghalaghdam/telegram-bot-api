@@ -37,33 +37,71 @@ impl Watchdog {
         self.last_kick_time.store(now, Ordering::Relaxed);
     }
 
-    /// Spawns the watchdog monitoring & memory trim loop
+    /// Seconds since the last kick.
+    fn idle_secs(&self) -> i64 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        now - self.last_kick_time.load(Ordering::Relaxed)
+    }
+
+    /// Spawns the liveness heartbeat (a task on the Tokio runtime that kicks every second) and an
+    /// independent OS-thread monitor. If the runtime stops scheduling tasks (blocked workers), the
+    /// heartbeat stops and the monitor thread reports it. Also trims the heap periodically.
     pub fn spawn_monitor(self: Arc<Self>) {
+        let beat = Arc::clone(&self);
         tokio::spawn(async move {
-            let check_interval = Duration::from_secs(10);
             loop {
-                sleep(check_interval).await;
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
-                let last = self.last_kick_time.load(Ordering::Relaxed);
-
-                if now - last > self.timeout_secs {
-                    tracing::warn!(
-                        "Watchdog alert: Event loop has been unresponsive for {} seconds (timeout: {}s)",
-                        now - last,
-                        self.timeout_secs
-                    );
-                }
-                self.last_kick_time.store(now, Ordering::Relaxed);
-
-                // Proactively release unused heap pages back to the Linux kernel (MADV_DONTNEED)
-                #[cfg(all(target_os = "linux", target_env = "gnu"))]
-                unsafe {
-                    let _ = malloc_trim(0);
-                }
+                sleep(Duration::from_secs(1)).await;
+                beat.kick();
             }
         });
+
+        let _ = std::thread::Builder::new().name("watchdog".into()).spawn(move || {
+            let mut ticks = 0u64;
+            let mut alerted = false;
+            loop {
+                std::thread::sleep(Duration::from_secs(5));
+                let idle = self.idle_secs();
+                if idle > self.timeout_secs {
+                    // Log once per stall; the next kick re-arms.
+                    if !alerted {
+                        tracing::error!(
+                            "Watchdog timeout expired after {} seconds: event loop is unresponsive",
+                            idle
+                        );
+                        alerted = true;
+                    }
+                } else {
+                    alerted = false;
+                }
+
+                // Proactively release unused heap pages back to the Linux kernel every ~10 s
+                ticks += 1;
+                #[cfg(all(target_os = "linux", target_env = "gnu"))]
+                if ticks % 2 == 0 {
+                    unsafe {
+                        let _ = malloc_trim(0);
+                    }
+                }
+                #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+                let _ = ticks;
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_grows_until_kicked() {
+        let w = Watchdog::new(60);
+        w.last_kick_time.store(w.last_kick_time.load(Ordering::Relaxed) - 100, Ordering::Relaxed);
+        assert!(w.idle_secs() >= 100);
+        w.kick();
+        assert!(w.idle_secs() <= 1);
     }
 }
