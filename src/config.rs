@@ -1,5 +1,5 @@
 use clap::Parser;
-use std::net::{AddrParseError, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 /// Server configuration matching 100% of official tdlib/telegram-bot-api CLI options (`telegram-bot-api.cpp`).
@@ -16,18 +16,20 @@ pub struct ServerConfig {
     pub local_mode: bool,
 
     /// Application identifier for Telegram API access (defaults to TELEGRAM_API_ID)
-    #[arg(long = "api-id", env = "TELEGRAM_API_ID")]
+    /// Validated in `validate()` with the C++ message; 0 means "not provided".
+    #[arg(long = "api-id", env = "TELEGRAM_API_ID", default_value_t = 0)]
     pub api_id: i32,
 
     /// Application identifier hash for Telegram API access (defaults to TELEGRAM_API_HASH)
-    #[arg(long = "api-hash", env = "TELEGRAM_API_HASH")]
+    /// Only non-emptiness is checked (as in C++); Telegram validates the value itself.
+    #[arg(long = "api-hash", env = "TELEGRAM_API_HASH", default_value = "")]
     pub api_hash: String,
 
     /// HTTP listening port (default is 8081)
-    #[arg(long = "http-port", short = 'p', env = "TELEGRAM_HTTP_PORT", default_value_t = 8081)]
+    #[arg(long = "http-port", short = 'p', env = "TELEGRAM_HTTP_PORT", default_value_t = 8081, value_parser = clap::value_parser!(u16).range(1..))]
     pub http_port: u16,
 
-    /// HTTP statistics port
+    /// HTTP statistics port (0 or unset disables the statistics server)
     #[arg(long = "http-stat-port", short = 's', env = "TELEGRAM_HTTP_STAT_PORT")]
     pub http_stat_port: Option<u16>,
 
@@ -52,23 +54,24 @@ pub struct ServerConfig {
     pub max_webhook_connections: i32,
 
     /// Local IP address, HTTP connections to which will be accepted (default 0.0.0.0)
-    #[arg(long = "http-ip-address", env = "TELEGRAM_HTTP_IP", default_value = "0.0.0.0")]
-    pub http_ip_address: String,
+    #[arg(long = "http-ip-address", env = "TELEGRAM_HTTP_IP", default_value_t = IpAddr::V4(Ipv4Addr::UNSPECIFIED))]
+    pub http_ip_address: IpAddr,
 
     /// Local IP address, HTTP statistics connections to which will be accepted (default 0.0.0.0)
-    #[arg(long = "http-stat-ip-address", default_value = "0.0.0.0")]
-    pub http_stat_ip_address: String,
+    #[arg(long = "http-stat-ip-address", default_value_t = IpAddr::V4(Ipv4Addr::UNSPECIFIED))]
+    pub http_stat_ip_address: IpAddr,
 
     /// Path to the file where the log will be written
     #[arg(long = "log", short = 'l')]
     pub log_file: Option<String>,
 
-    /// Log verbosity level (TDLib scale, default 0: 0-1=error, 2=warn, 3=info, 4=debug, 5+=trace)
-    #[arg(long = "verbosity", short = 'v', default_value_t = 0)]
+    /// Log verbosity level (TDLib scale, default 0: 0=fatal/off, 1=error, 2=warn, 3=info, 4=debug, 5+=trace).
+    /// A non-empty RUST_LOG environment variable overrides it.
+    #[arg(long = "verbosity", short = 'v', default_value_t = 0, allow_negative_numbers = true)]
     pub verbosity: i32,
 
     /// Memory log verbosity level; accepted for compatibility, has no effect (no in-memory log)
-    #[arg(long = "memory-verbosity", default_value_t = 3)]
+    #[arg(long = "memory-verbosity", default_value_t = 3, allow_negative_numbers = true)]
     pub memory_verbosity: i32,
 
     /// Maximum size of the log file in bytes before it is rotated to "<log>.old" (default is 2000000000)
@@ -101,21 +104,39 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    /// Returns the parsed `SocketAddr` for the HTTP server to bind to.
-    pub fn address(&self) -> Result<SocketAddr, AddrParseError> {
-        Ok(SocketAddr::new(self.http_ip_address.trim().parse()?, self.http_port))
+    /// `SocketAddr` for the main HTTP listener (IP already validated at parse time).
+    pub fn address(&self) -> SocketAddr {
+        SocketAddr::new(self.http_ip_address, self.http_port)
     }
 
-    /// Returns the parsed `SocketAddr` for the dedicated HTTP statistics server.
-    pub fn stat_address(&self) -> Option<Result<SocketAddr, AddrParseError>> {
-        self.http_stat_port
-            .map(|port| Ok(SocketAddr::new(self.http_stat_ip_address.trim().parse()?, port)))
+    /// `SocketAddr` for the statistics listener; `None` when `-s` is unset or 0 (C++ `http_stat_port != 0`).
+    pub fn stat_address(&self) -> Option<SocketAddr> {
+        match self.http_stat_port {
+            Some(port) if port != 0 => Some(SocketAddr::new(self.http_stat_ip_address, port)),
+            _ => None,
+        }
+    }
+
+    /// Option checks matching C++ `options.add_check` (telegram-bot-api.cpp:304-321).
+    pub fn validate(&self) -> Result<(), String> {
+        if self.api_id <= 0 || self.api_hash.trim().is_empty() {
+            return Err("You must provide valid api-id and api-hash obtained at https://my.telegram.org".into());
+        }
+        if self.verbosity < 0 {
+            return Err("Wrong verbosity level specified".into());
+        }
+        if self.memory_verbosity < 0 {
+            return Err("Wrong memory verbosity level specified".into());
+        }
+        Ok(())
     }
 
     /// Maps the TDLib-style `--verbosity` level to a tracing filter directive.
     pub fn log_level(&self) -> &'static str {
         match self.verbosity {
-            ..=1 => "error",
+            // tracing has no fatal level; C++ level 0 logs only fatal errors, so silence everything.
+            ..=0 => "off",
+            1 => "error",
             2 => "warn",
             3 => "info",
             4 => "debug",
@@ -169,16 +190,27 @@ impl ServerConfig {
     }
 }
 
-/// Creates `dir` if needed and verifies files can be created in it (C++ startup sanity check).
-pub fn ensure_writable_dir(dir: &Path, option: &str) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| {
-        format!("Can't create directory \"{}\": {e}. Use {option} option to specify a writable directory", dir.display())
-    })?;
-    let probe = dir.join(format!(".write_probe_{}", std::process::id()));
-    std::fs::File::create(&probe).map_err(|e| {
-        format!("Can't create files in the directory \"{}\": {e}. Use {option} option to specify a writable directory", dir.display())
+/// Creates `dir` if needed and verifies that files and subdirectories can be created in it
+/// (C++ telegram-bot-api.cpp:344-370: mkpath + mkstemp + mkdtemp). `label` is e.g. "working"/"files"/"temporary".
+pub fn ensure_writable_dir(dir: &Path, option: &str, label: &str) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create {label} directory: {e}"))?;
+    let tag = std::process::id();
+    let probe = dir.join(format!(".write_probe_{tag}"));
+    std::fs::File::create(&probe).map_err(|_| {
+        format!(
+            "Can't create files in the directory \"{}\". Use {option} option to specify a writable {label} directory",
+            dir.display()
+        )
     })?;
     let _ = std::fs::remove_file(&probe);
+    let probe_dir = dir.join(format!(".write_probe_dir_{tag}"));
+    std::fs::create_dir(&probe_dir).map_err(|_| {
+        format!(
+            "Can't create directories in the directory \"{}\". Use {option} option to specify a writable {label} directory",
+            dir.display()
+        )
+    })?;
+    let _ = std::fs::remove_dir(&probe_dir);
     Ok(())
 }
 
@@ -199,16 +231,20 @@ mod tests {
     #[test]
     fn writable_dir_check() {
         let d = std::env::temp_dir().join(format!("tba_cfg_test_{}", std::process::id()));
-        assert!(ensure_writable_dir(&d.join("x"), "--dir").is_ok());
+        assert!(ensure_writable_dir(&d.join("x"), "--dir", "working").is_ok());
+        assert_eq!(std::fs::read_dir(d.join("x")).unwrap().count(), 0, "probes cleaned up");
         let f = d.join("file");
         std::fs::write(&f, b"x").unwrap();
-        assert!(ensure_writable_dir(&f.join("sub"), "--dir").is_err());
+        let e = ensure_writable_dir(&f.join("sub"), "--dir", "working").unwrap_err();
+        assert!(e.starts_with("Failed to create working directory"), "{e}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn log_level_scale() {
         let mut c = cfg();
+        assert_eq!(c.log_level(), "off");
+        c.verbosity = 1;
         assert_eq!(c.log_level(), "error");
         c.verbosity = 3;
         assert_eq!(c.log_level(), "info");
@@ -218,8 +254,38 @@ mod tests {
 
     #[test]
     fn ipv6_address_parses() {
-        let mut c = cfg();
-        c.http_ip_address = "::1".into();
-        assert_eq!(c.address().unwrap().to_string(), "[::1]:8081");
+        let c = ServerConfig::parse_from(["x", "--api-id", "1", "--api-hash", "h", "--http-ip-address", "::1"]);
+        assert_eq!(c.address().to_string(), "[::1]:8081");
+    }
+
+    fn try_cfg(args: &[&str]) -> Result<ServerConfig, clap::Error> {
+        let mut v = vec!["x", "--api-id", "1", "--api-hash", "h"];
+        v.extend_from_slice(args);
+        ServerConfig::try_parse_from(v)
+    }
+
+    #[test]
+    fn ports_and_ips_validated_at_parse_time() {
+        assert!(try_cfg(&["-p", "0"]).is_err());
+        assert!(try_cfg(&["-p", "65536"]).is_err());
+        assert!(try_cfg(&["--http-ip-address", "nope"]).is_err());
+        assert!(try_cfg(&["--http-stat-ip-address", "1.2.3"]).is_err());
+        assert!(try_cfg(&["-s", "0"]).unwrap().stat_address().is_none());
+        assert!(try_cfg(&[]).unwrap().stat_address().is_none());
+        assert_eq!(try_cfg(&["-s", "9"]).unwrap().stat_address().unwrap().port(), 9);
+    }
+
+    #[test]
+    fn validate_matches_cpp_messages() {
+        assert!(cfg().validate().is_ok());
+        let c = ServerConfig::parse_from(["x", "--api-id", "0", "--api-hash", "h"]);
+        assert!(c.validate().unwrap_err().starts_with("You must provide valid api-id"));
+        let c = ServerConfig::parse_from(["x", "--api-id", "1", "--api-hash", " "]);
+        assert!(c.validate().is_err());
+        assert_eq!(try_cfg(&["-v", "-1"]).unwrap().validate().unwrap_err(), "Wrong verbosity level specified");
+        assert_eq!(
+            try_cfg(&["--memory-verbosity", "-1"]).unwrap().validate().unwrap_err(),
+            "Wrong memory verbosity level specified"
+        );
     }
 }
