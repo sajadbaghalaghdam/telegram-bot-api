@@ -126,10 +126,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(mut sig) => {
                 tokio::spawn(async move {
                     while sig.recv().await.is_some() {
-                        if let Some(w) = &log_writer {
-                            if let Err(e) = w.reopen() {
-                                eprintln!("Failed to reopen log file: {e}");
-                            }
+                        if let Some(Err(e)) = log_writer.as_ref().map(|w| w.reopen()) {
+                            eprintln!("Failed to reopen log file: {e}");
                         }
                     }
                 });
@@ -192,6 +190,17 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client_manager = Arc::new(ClientManager::new(Arc::clone(&engine)));
     let stats = Arc::new(ServerStats::new());
+    {
+        // CPU usage is derived from samples taken once a second (C++ ServerCpuStat::update).
+        let stats = Arc::clone(&stats);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                tick.tick().await;
+                stats.sample_cpu();
+            }
+        });
+    }
 
     let watchdog = Watchdog::new(60);
     watchdog.clone().spawn_monitor();
