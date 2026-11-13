@@ -145,13 +145,199 @@ pub fn should_restore(local_mode: bool, url: &str) -> bool {
     local_mode && !url.is_empty() && is_local_webhook_url(url)
 }
 
-/// URL must be parseable http/https with a host.
-pub fn validate_webhook_url(url: &str) -> Result<reqwest::Url, &'static str> {
-    let u = reqwest::Url::parse(url).map_err(|_| "invalid webhook URL specified")?;
+/// URL must be parseable http/https with a host. Like C++ `parse_url(url, Protocol::Https)` a
+/// scheme-less URL is retried with `https://` prepended. Returns the URL string to use.
+pub fn normalize_webhook_url(url: &str) -> Result<String, &'static str> {
+    let candidate = if url.contains("://") { url.to_string() } else { format!("https://{url}") };
+    let u = reqwest::Url::parse(&candidate).map_err(|_| "invalid webhook URL specified")?;
     if (u.scheme() != "http" && u.scheme() != "https") || u.host_str().is_none() {
         return Err("unsupported URL protocol");
     }
-    Ok(u)
+    Ok(candidate)
+}
+
+/// URL must be parseable http/https with a host (scheme-less URLs get `https://`).
+pub fn validate_webhook_url(url: &str) -> Result<reqwest::Url, &'static str> {
+    let n = normalize_webhook_url(url)?;
+    reqwest::Url::parse(&n).map_err(|_| "invalid webhook URL specified")
+}
+
+/// C++ WebhookActor: "Invalid IP address specified".
+pub fn validate_ip_address(ip: &str) -> Result<(), &'static str> {
+    ip.parse::<IpAddr>().map(|_| ()).map_err(|_| "invalid IP address specified")
+}
+
+// ---------------------------------------------------------------------------------------------
+// setWebhook argument parsing (C++ reads `query->arg(..)` regardless of the content type)
+// ---------------------------------------------------------------------------------------------
+
+/// The original HTTP request, forwarded unchanged when the webhook is set on the cloud server.
+pub struct RawForward<'a> {
+    pub query: Option<&'a str>,
+    pub content_type: Option<&'a str>,
+    pub body: &'a Bytes,
+}
+
+fn percent_decode_form(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < b.len() => {
+                let h = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok());
+                match h {
+                    Some(v) => {
+                        out.push(v);
+                        i += 2;
+                    }
+                    None => out.push(b'%'),
+                }
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn parse_urlencoded(body: &[u8], out: &mut HashMap<String, String>) {
+    for pair in String::from_utf8_lossy(body).split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        out.insert(percent_decode_form(k), percent_decode_form(v));
+    }
+}
+
+fn json_scalar_to_string(v: &Value) -> Option<String> {
+    match v {
+        Value::Null => None,
+        Value::String(s) => Some(s.clone()),
+        other => Some(other.to_string()),
+    }
+}
+
+fn find_sub(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if needle.is_empty() || from > hay.len() {
+        return None;
+    }
+    hay[from..].windows(needle.len()).position(|w| w == needle).map(|p| p + from)
+}
+
+fn header_param(disposition: &str, key: &str) -> Option<String> {
+    for part in disposition.split(';').skip(1) {
+        if let Some((k, v)) = part.trim().split_once('=') {
+            if k.trim().eq_ignore_ascii_case(key) {
+                return Some(v.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Parses text fields of a multipart/form-data body (file parts such as `certificate` are skipped).
+fn parse_multipart(body: &[u8], boundary: &str, out: &mut HashMap<String, String>) -> Result<(), String> {
+    const BAD: &str = "can't parse multipart/form-data request body";
+    let delim = format!("--{boundary}").into_bytes();
+    let mut next_delim = b"\r\n".to_vec();
+    next_delim.extend_from_slice(&delim);
+    let mut pos = find_sub(body, &delim, 0).ok_or(BAD)? + delim.len();
+    loop {
+        if body[pos..].starts_with(b"--") {
+            return Ok(());
+        }
+        if !body[pos..].starts_with(b"\r\n") {
+            return Err(BAD.into());
+        }
+        pos += 2;
+        let (head_end, body_start) = if body[pos..].starts_with(b"\r\n") {
+            (pos, pos + 2)
+        } else {
+            let e = find_sub(body, b"\r\n\r\n", pos).ok_or(BAD)?;
+            (e, e + 4)
+        };
+        let head = String::from_utf8_lossy(&body[pos..head_end]).into_owned();
+        let end = find_sub(body, &next_delim, body_start).ok_or(BAD)?;
+        let content = &body[body_start..end];
+        let disposition = head
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("content-disposition:"))
+            .map(|l| l.to_string());
+        if let Some(d) = disposition {
+            if let Some(name) = header_param(&d, "name") {
+                if header_param(&d, "filename").is_none() {
+                    out.insert(name, String::from_utf8_lossy(content).into_owned());
+                }
+            }
+        }
+        pos = end + next_delim.len();
+        if pos > body.len() {
+            return Err(BAD.into());
+        }
+    }
+}
+
+/// Merges the URL query and the request body (JSON, form-urlencoded or multipart) into one
+/// argument map, the way C++ `Query::arg` sees them. Body values win over query values.
+/// A body that cannot be parsed is an error (never silently treated as "no arguments").
+pub fn parse_request_args(
+    query: &HashMap<String, String>,
+    content_type: Option<&str>,
+    body: &[u8],
+) -> Result<HashMap<String, String>, String> {
+    let mut args = query.clone();
+    if body.iter().all(|b| b.is_ascii_whitespace()) {
+        return Ok(args);
+    }
+    let ct = content_type.unwrap_or("").trim();
+    let ct_lower = ct.to_ascii_lowercase();
+    let starts_obj = body.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{');
+    if ct_lower.starts_with("multipart/form-data") {
+        let boundary = header_param(&format!("x;{ct}"), "boundary").filter(|b| !b.is_empty());
+        let boundary = boundary.ok_or_else(|| "multipart/form-data boundary is missing".to_string())?;
+        parse_multipart(body, &boundary, &mut args)?;
+    } else if ct_lower.starts_with("application/x-www-form-urlencoded") {
+        parse_urlencoded(body, &mut args);
+    } else if ct_lower.contains("json") || (ct_lower.is_empty() && starts_obj) {
+        let v: Value = serde_json::from_slice(body).map_err(|_| "can't parse JSON object request body".to_string())?;
+        let obj = v.as_object().ok_or_else(|| "JSON request body must be an object".to_string())?;
+        for (k, v) in obj {
+            if let Some(s) = json_scalar_to_string(v) {
+                args.insert(k.clone(), s);
+            }
+        }
+    } else if ct_lower.is_empty() {
+        parse_urlencoded(body, &mut args);
+    } else {
+        return Err("unsupported request Content-Type".to_string());
+    }
+    Ok(args)
+}
+
+/// C++ `to_bool`: trimmed, case-insensitive "true" / "yes" / "1".
+pub fn arg_to_bool(s: &str) -> bool {
+    matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1")
+}
+
+/// Builds the setWebhook parameters from the merged argument map.
+pub fn set_webhook_request_from_args(args: &HashMap<String, String>) -> Result<crate::models::SetWebhookRequest, String> {
+    let allowed_updates = match args.get("allowed_updates").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        None => None,
+        Some(s) => Some(
+            serde_json::from_str::<Vec<String>>(s).map_err(|_| "can't parse allowed_updates as a JSON array of strings".to_string())?,
+        ),
+    };
+    Ok(crate::models::SetWebhookRequest {
+        url: args.get("url").cloned().unwrap_or_default(),
+        ip_address: args.get("ip_address").cloned(),
+        max_connections: args.get("max_connections").and_then(|v| v.trim().parse::<i32>().ok()),
+        allowed_updates,
+        drop_pending_updates: args.get("drop_pending_updates").map(|v| arg_to_bool(v)),
+        secret_token: args.get("secret_token").cloned(),
+    })
 }
 
 fn id_of(v: &Value) -> Option<i64> {
@@ -697,6 +883,104 @@ mod tests {
     }
 
     #[test]
+    fn scheme_less_url_gets_https() {
+        assert_eq!(normalize_webhook_url("example.com/hook").unwrap(), "https://example.com/hook");
+        assert_eq!(normalize_webhook_url("localhost:8080/x").unwrap(), "https://localhost:8080/x");
+        assert_eq!(normalize_webhook_url("http://127.0.0.1:1/").unwrap(), "http://127.0.0.1:1/");
+        assert!(normalize_webhook_url("ftp://example.com/").is_err());
+        assert!(normalize_webhook_url("").is_err());
+        assert!(normalize_webhook_url("a b").is_err());
+    }
+
+    #[test]
+    fn ip_address_validation() {
+        assert!(validate_ip_address("1.2.3.4").is_ok());
+        assert!(validate_ip_address("::1").is_ok());
+        assert!(validate_ip_address("example.com").is_err());
+        assert!(validate_ip_address("999.1.1.1").is_err());
+    }
+
+    fn q(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn args_from_query_only() {
+        let a = parse_request_args(&q(&[("url", "http://127.0.0.1:1/h")]), None, b"").unwrap();
+        let r = set_webhook_request_from_args(&a).unwrap();
+        assert_eq!(r.url, "http://127.0.0.1:1/h");
+        assert_eq!(r.max_connections, None);
+    }
+
+    #[test]
+    fn args_from_json_body() {
+        let body = br#"{"url":"http://127.0.0.1:1/h","max_connections":7,"drop_pending_updates":true,"secret_token":"s_1","allowed_updates":["message","edited_message"],"ip_address":"127.0.0.1"}"#;
+        let a = parse_request_args(&q(&[]), Some("application/json; charset=utf-8"), body).unwrap();
+        let r = set_webhook_request_from_args(&a).unwrap();
+        assert_eq!(r.url, "http://127.0.0.1:1/h");
+        assert_eq!(r.max_connections, Some(7));
+        assert_eq!(r.drop_pending_updates, Some(true));
+        assert_eq!(r.secret_token.as_deref(), Some("s_1"));
+        assert_eq!(r.allowed_updates, Some(vec!["message".into(), "edited_message".into()]));
+        assert_eq!(r.ip_address.as_deref(), Some("127.0.0.1"));
+    }
+
+    #[test]
+    fn args_from_form_urlencoded_body() {
+        let body = b"url=http%3A%2F%2F127.0.0.1%3A1%2Fh%3Fa%3Db&max_connections=9&drop_pending_updates=yes&secret_token=abc&allowed_updates=%5B%22message%22%5D";
+        let a = parse_request_args(&q(&[]), Some("application/x-www-form-urlencoded"), body).unwrap();
+        let r = set_webhook_request_from_args(&a).unwrap();
+        assert_eq!(r.url, "http://127.0.0.1:1/h?a=b");
+        assert_eq!(r.max_connections, Some(9));
+        assert_eq!(r.drop_pending_updates, Some(true));
+        assert_eq!(r.secret_token.as_deref(), Some("abc"));
+        assert_eq!(r.allowed_updates, Some(vec!["message".into()]));
+        // no content type at all: curl -d style bodies are form data
+        let a = parse_request_args(&q(&[]), None, b"url=http%3A%2F%2Fx.y%2F&a+b=c+d").unwrap();
+        assert_eq!(a["url"], "http://x.y/");
+        assert_eq!(a["a b"], "c d");
+    }
+
+    #[test]
+    fn args_from_multipart_body_skips_certificate() {
+        let b = "XyZ";
+        let body = format!(
+            "--{b}\r\nContent-Disposition: form-data; name=\"url\"\r\n\r\nhttps://example.com/hook\r\n\
+             --{b}\r\nContent-Disposition: form-data; name=\"certificate\"; filename=\"cert.pem\"\r\nContent-Type: application/x-pem-file\r\n\r\n-----BEGIN CERTIFICATE-----\r\nAAA\r\n-----END CERTIFICATE-----\r\n\
+             --{b}\r\nContent-Disposition: form-data; name=\"max_connections\"\r\n\r\n12\r\n\
+             --{b}\r\nContent-Disposition: form-data; name=\"allowed_updates\"\r\n\r\n[\"message\"]\r\n\
+             --{b}--\r\n"
+        );
+        let ct = format!("multipart/form-data; boundary=\"{b}\"");
+        let a = parse_request_args(&q(&[("secret_token", "fromquery")]), Some(&ct), body.as_bytes()).unwrap();
+        let r = set_webhook_request_from_args(&a).unwrap();
+        assert_eq!(r.url, "https://example.com/hook");
+        assert_eq!(r.max_connections, Some(12));
+        assert_eq!(r.secret_token.as_deref(), Some("fromquery"));
+        assert_eq!(r.allowed_updates, Some(vec!["message".into()]));
+        assert!(!a.contains_key("certificate"));
+    }
+
+    #[test]
+    fn unparsable_bodies_are_errors_not_empty_args() {
+        assert!(parse_request_args(&q(&[]), Some("application/json"), b"{not json").is_err());
+        assert!(parse_request_args(&q(&[]), Some("application/json"), b"[1,2]").is_err());
+        assert!(parse_request_args(&q(&[]), Some("multipart/form-data"), b"--x\r\n").is_err());
+        assert!(parse_request_args(&q(&[]), Some("multipart/form-data; boundary=x"), b"garbage").is_err());
+        assert!(parse_request_args(&q(&[]), Some("text/plain"), b"url=x").is_err());
+        let bad = q(&[("allowed_updates", "not json")]);
+        assert!(set_webhook_request_from_args(&bad).is_err());
+    }
+
+    #[test]
+    fn body_overrides_query_and_bool_parsing() {
+        let a = parse_request_args(&q(&[("url", "http://q/")]), Some("application/json"), br#"{"url":"http://b/"}"#).unwrap();
+        assert_eq!(a["url"], "http://b/");
+        assert!(arg_to_bool(" TRUE ") && arg_to_bool("1") && arg_to_bool("yes"));
+        assert!(!arg_to_bool("false") && !arg_to_bool(""));
+    }
+
+    #[test]
     fn queue_ordering_groups() {
         let ups = vec![
             json!({"update_id":1,"message":{"chat":{"id":10}}}),
@@ -876,6 +1160,161 @@ mod integration_tests {
         assert!(msg.unwrap().contains("500"));
         engine.stop_webhook_worker(&token);
         assert!(!engine.webhook_workers.contains_key(&token));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    type Recorded = Arc<Mutex<Vec<(String, String, Vec<u8>)>>>;
+
+    /// Upstream mock: records (request head, path, body) and answers via `f(path) -> (status, body)`.
+    async fn mock_upstream(rec: Recorded, f: impl Fn(&str) -> (&'static str, String) + Send + Sync + 'static) -> u16 {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let f = Arc::new(f);
+        tokio::spawn(async move {
+            loop {
+                let (mut s, _) = l.accept().await.unwrap();
+                let (rec, f) = (rec.clone(), f.clone());
+                tokio::spawn(async move {
+                    let Some((head, body)) = read_request(&mut s).await else { return };
+                    let path = head.lines().next().unwrap_or("").split(' ').nth(1).unwrap_or("").to_string();
+                    rec.lock().unwrap().push((head, path.clone(), body));
+                    if path.contains("/getUpdates") {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                    let (st, b) = f(&path);
+                    respond(&mut s, st, &b).await;
+                });
+            }
+        });
+        port
+    }
+
+    fn ok_upstream(path: &str) -> (&'static str, String) {
+        if path.contains("/getUpdates") {
+            ("200 OK", r#"{"ok":true,"result":[]}"#.to_string())
+        } else {
+            ("200 OK", r#"{"ok":true,"result":true}"#.to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn cloud_set_webhook_forwards_original_request_for_every_body_type() {
+        let rec: Recorded = Arc::new(Mutex::new(Vec::new()));
+        let port = mock_upstream(rec.clone(), ok_upstream).await;
+        let (engine, dir) = test_engine("wh_cloud", port);
+
+        let multipart = "--B1\r\nContent-Disposition: form-data; name=\"url\"\r\n\r\nhttps://example.com/h\r\n--B1\r\nContent-Disposition: form-data; name=\"certificate\"; filename=\"c.pem\"\r\n\r\nPEMDATA\r\n--B1--\r\n";
+        let cases: Vec<(&str, Option<&str>, Vec<u8>)> = vec![
+            ("111:a", Some("application/json"), br#"{"url":"https://example.com/h","max_connections":3}"#.to_vec()),
+            ("222:b", Some("application/x-www-form-urlencoded"), b"url=https%3A%2F%2Fexample.com%2Fh&max_connections=3".to_vec()),
+            ("333:c", Some("multipart/form-data; boundary=B1"), multipart.as_bytes().to_vec()),
+        ];
+        for (token, ct, body) in &cases {
+            let out = engine
+                .universal_call(token, "setWebhook", &HashMap::new(), Some("x=1"), *ct, Bytes::from(body.clone()))
+                .await
+                .unwrap();
+            assert!(String::from_utf8_lossy(&out).contains("\"ok\":true"));
+        }
+        let seen = rec.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        for ((token, ct, body), (head, path, got)) in cases.iter().zip(seen.iter()) {
+            assert_eq!(path, &format!("/bot{token}/setWebhook?x=1"));
+            assert!(head.to_ascii_lowercase().contains(&format!("content-type: {}", ct.unwrap().to_ascii_lowercase())), "{head}");
+            assert_eq!(got, body, "body must be forwarded byte for byte");
+        }
+        // the certificate part survives (it is only dropped by our own arg parser)
+        assert!(String::from_utf8_lossy(&seen[2].2).contains("PEMDATA"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn local_set_webhook_accepts_form_and_multipart_bodies() {
+        let rec: Recorded = Arc::new(Mutex::new(Vec::new()));
+        let port = mock_upstream(rec.clone(), ok_upstream).await;
+        let (engine, dir) = test_engine("wh_local_forms", port);
+        let multipart = "--B1\r\nContent-Disposition: form-data; name=\"url\"\r\n\r\nhttp://127.0.0.1:9/h\r\n--B1\r\nContent-Disposition: form-data; name=\"max_connections\"\r\n\r\n4\r\n--B1--\r\n";
+        let cases: Vec<(&str, &str, Vec<u8>)> = vec![
+            ("444:a", "application/x-www-form-urlencoded", b"url=http%3A%2F%2F127.0.0.1%3A9%2Fh&max_connections=4".to_vec()),
+            ("555:b", "multipart/form-data; boundary=B1", multipart.as_bytes().to_vec()),
+        ];
+        for (token, ct, body) in cases {
+            engine
+                .universal_call(token, "setWebhook", &HashMap::new(), None, Some(ct), Bytes::from(body))
+                .await
+                .unwrap();
+            let rec_wh = engine.storage.get_webhook(token).await.expect("stored");
+            assert_eq!(rec_wh.url, "http://127.0.0.1:9/h");
+            assert_eq!(rec_wh.max_connections, 4);
+            assert!(engine.webhook_workers.contains_key(token));
+            engine.stop_webhook_worker(token);
+        }
+        assert!(rec.lock().unwrap().iter().any(|(_, p, _)| p.contains("/bot444:a/deleteWebhook")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn unparsable_body_never_touches_upstream_or_local_state() {
+        let rec: Recorded = Arc::new(Mutex::new(Vec::new()));
+        let port = mock_upstream(rec.clone(), ok_upstream).await;
+        let (engine, dir) = test_engine("wh_badbody", port);
+        engine.storage.save_webhook("666:a", "http://127.0.0.1:9/h", None, 40, None, None).await;
+        let r = engine
+            .universal_call("666:a", "setWebhook", &HashMap::new(), None, Some("application/json"), Bytes::from_static(b"{oops"))
+            .await;
+        assert!(matches!(r, Err(TelegramError::BadRequest(_))), "{r:?}");
+        assert!(engine.storage.get_webhook("666:a").await.is_some());
+        assert!(rec.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn local_set_webhook_fails_when_upstream_delete_fails() {
+        let rec: Recorded = Arc::new(Mutex::new(Vec::new()));
+        let port = mock_upstream(rec.clone(), |_| {
+            ("401 Unauthorized", r#"{"ok":false,"error_code":401,"description":"Unauthorized"}"#.to_string())
+        })
+        .await;
+        let (engine, dir) = test_engine("wh_delfail", port);
+        let r = engine
+            .universal_call(
+                "777:a",
+                "setWebhook",
+                &HashMap::new(),
+                None,
+                Some("application/json"),
+                Bytes::from_static(br#"{"url":"http://127.0.0.1:9/h"}"#),
+            )
+            .await;
+        assert!(matches!(r, Err(TelegramError::ApiError { code: 401, .. })), "{r:?}");
+        assert!(engine.storage.get_webhook("777:a").await.is_none());
+        assert!(!engine.webhook_workers.contains_key("777:a"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn invalid_ip_and_secret_rules() {
+        let rec: Recorded = Arc::new(Mutex::new(Vec::new()));
+        let port = mock_upstream(rec.clone(), ok_upstream).await;
+        let (engine, dir) = test_engine("wh_ip", port);
+        let call = |token: &'static str, body: &'static [u8]| {
+            let engine = engine.clone();
+            async move {
+                engine
+                    .universal_call(token, "setWebhook", &HashMap::new(), None, Some("application/json"), Bytes::from_static(body))
+                    .await
+            }
+        };
+        let r = call("881:a", br#"{"url":"https://example.com/h","ip_address":"not-an-ip"}"#).await;
+        assert!(matches!(r, Err(TelegramError::BadRequest(_))), "{r:?}");
+        // bad secret with a url is rejected, but ignored when the webhook is being deleted
+        let r = call("882:a", br#"{"url":"https://example.com/h","secret_token":"bad token"}"#).await;
+        assert!(matches!(r, Err(TelegramError::BadRequest(_))), "{r:?}");
+        let r = call("883:a", br#"{"url":"","secret_token":"bad token"}"#).await;
+        assert!(r.is_ok(), "{r:?}");
+        // scheme-less url is accepted (https:// assumed) and forwarded
+        let r = call("884:a", br#"{"url":"example.com/h"}"#).await;
+        assert!(r.is_ok(), "{r:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
