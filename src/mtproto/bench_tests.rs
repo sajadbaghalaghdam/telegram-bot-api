@@ -365,10 +365,10 @@ fn measured<R>(f: impl FnOnce() -> R) -> (R, Run) {
 fn report(name: &str, mb: f64, runs: &[Run], units: f64, unit_name: &str) {
     let best = runs.iter().min_by(|a, b| a.secs.total_cmp(&b.secs)).unwrap();
     println!(
-        "BENCH {name}: min {:.3}s  {:.1} MB/s  cpu {:.2}s  allocs/{unit_name} {:.2}  alloc-bytes/{unit_name} {:.0}  peak-live {:.2} MiB  (runs: {})",
+        "BENCH {name}: min {:.3}s  {:.1} MB/s  min-cpu {:.2}s  allocs/{unit_name} {:.2}  alloc-bytes/{unit_name} {:.0}  peak-live {:.2} MiB  (runs: {})",
         best.secs,
         mb / best.secs,
-        best.cpu,
+        runs.iter().map(|r| r.cpu).fold(f64::MAX, f64::min),
         best.allocs as f64 / units,
         best.bytes as f64 / units,
         best.peak_live as f64 / 1048576.0,
@@ -449,12 +449,13 @@ fn bench_packet() {
         let body = pattern(size);
         let mb = (iters * size) as f64 / 1048576.0;
         let mut runs = Vec::new();
+        let mut out = Vec::new();
         for _ in 0..3 {
             let ((), r) = measured(|| {
                 for i in 0..iters {
-                    std::hint::black_box(
-                        super::packet::pack_encrypted_message(&key, kid, 1, 2, 4 * i as i64 + 4, 1, &body).unwrap(),
-                    );
+                    let header = super::packet::OutgoingHeader { server_salt: 1, session_id: 2, msg_id: 4 * i as i64 + 4, seq_no: 1 };
+                    super::packet::pack_encrypted_frame(&mut out, &key, kid, &header, &body).unwrap();
+                    std::hint::black_box(&out);
                 }
             });
             runs.push(r);
@@ -467,12 +468,15 @@ fn bench_packet() {
         server_frame(2, 101, &body, &mut frame);
         let packet = frame[4..].to_vec();
         let mut runs = Vec::new();
+        let mut work = Vec::new();
         for _ in 0..3 {
             let ((), r) = measured(|| {
                 for _ in 0..iters {
-                    let (id, _seq, data) = super::packet::unpack_encrypted_message(&key, kid, 2, &packet).unwrap();
-                    assert_eq!(id & 1, 1);
-                    std::hint::black_box(data);
+                    work.clear();
+                    work.extend_from_slice(&packet); // the receive buffer is refilled from the socket
+                    let u = super::packet::unpack_encrypted_in_place(&key, kid, 2, &mut work).unwrap();
+                    assert_eq!(u.msg_id & 1, 1);
+                    std::hint::black_box(&work[u.data]);
                 }
             });
             runs.push(r);

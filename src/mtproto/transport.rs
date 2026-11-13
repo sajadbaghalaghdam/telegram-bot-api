@@ -1,11 +1,31 @@
-use bytes::{BufMut, BytesMut};
+use std::future::Future;
 use std::io::{Error, ErrorKind};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 /// MTProto Intermediate Transport implementation.
+///
+/// Every network await is bounded: connecting by `CONNECT_TIMEOUT`, each read/write by
+/// `IO_TIMEOUT` (a stalled peer fails the call instead of hanging the transfer forever).
 pub struct IntermediateTransport {
     stream: TcpStream,
+}
+
+/// Maximum time to establish the TCP connection.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Maximum time a single socket read or write may stay pending.
+const IO_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn timed_out(what: &str) -> Error {
+    Error::new(ErrorKind::TimedOut, format!("MTProto {what} timed out"))
+}
+
+async fn with_timeout<T>(what: &str, fut: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
+    match tokio::time::timeout(IO_TIMEOUT, fut).await {
+        Ok(r) => r,
+        Err(_) => Err(timed_out(what)),
+    }
 }
 
 impl IntermediateTransport {
@@ -14,45 +34,53 @@ impl IntermediateTransport {
     const HEADER_SIZE: usize = 4;
 
     pub async fn connect(addr: &str) -> Result<Self, Error> {
-        let mut stream = TcpStream::connect(addr).await?;
+        let mut stream = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
+            Ok(r) => r?,
+            Err(_) => return Err(timed_out("connect")),
+        };
         stream.set_nodelay(true)?;
-        stream.write_all(&Self::PROTOCOL_TAG).await?;
-        stream.flush().await?;
+        with_timeout("write", async {
+            stream.write_all(&Self::PROTOCOL_TAG).await?;
+            stream.flush().await
+        })
+        .await?;
         Ok(Self { stream })
     }
 
+    /// Sends `payload` framed as `[len:u32 LE][payload]` (cold path: handshake).
     pub async fn send_packet(&mut self, payload: &[u8]) -> Result<(), Error> {
-        let len = payload.len() as u32;
-
         if payload.len() > Self::MAX_PACKET_SIZE {
             return Err(Error::new(
                 ErrorKind::InvalidData,
                 format!("Packet size {} exceeds maximum allowed size {}", payload.len(), Self::MAX_PACKET_SIZE),
             ));
         }
-
-        if payload.len() <= 4096 {
-            let mut buf = [0u8; 4096 + Self::HEADER_SIZE];
-            buf[0..4].copy_from_slice(&len.to_le_bytes());
-            buf[4..4 + payload.len()].copy_from_slice(payload);
-            self.stream.write_all(&buf[..4 + payload.len()]).await?;
-        } else {
-            let mut frame = BytesMut::with_capacity(Self::HEADER_SIZE + payload.len());
-            frame.put_u32_le(len);
-            frame.put_slice(payload);
-            self.stream.write_all(&frame).await?;
-        }
-
-        Ok(())
+        let mut frame = Vec::with_capacity(Self::HEADER_SIZE + payload.len());
+        frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        frame.extend_from_slice(payload);
+        self.send_frame(&frame).await
     }
 
+    /// Sends an already framed packet (`[len:u32 LE][payload]`, as built by
+    /// `pack_encrypted_frame`) with a single write and no copy.
+    pub async fn send_frame(&mut self, frame: &[u8]) -> Result<(), Error> {
+        if frame.len() < Self::HEADER_SIZE || frame.len() - Self::HEADER_SIZE > Self::MAX_PACKET_SIZE {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Frame size {} is outside the allowed range", frame.len()),
+            ));
+        }
+        with_timeout("write", self.stream.write_all(frame)).await
+    }
+
+    /// Reads one packet into `buf` (cleared first, capacity reused) and returns its length.
     pub async fn read_packet(&mut self, buf: &mut Vec<u8>) -> Result<usize, Error> {
         let mut len_buf = [0u8; 4];
-        self.stream.read_exact(&mut len_buf).await?;
+        with_timeout("read", self.stream.read_exact(&mut len_buf)).await?;
         let len = u32::from_le_bytes(len_buf) as usize;
 
+        buf.clear();
         if len == 0 {
-            buf.clear();
             return Err(Error::new(
                 ErrorKind::InvalidData,
                 "Zero-length MTProto packet received",
@@ -60,25 +88,26 @@ impl IntermediateTransport {
         }
 
         if len > Self::MAX_PACKET_SIZE {
-            buf.clear();
             return Err(Error::new(
                 ErrorKind::InvalidData,
                 format!("Packet size {} exceeds maximum allowed size {}", len, Self::MAX_PACKET_SIZE),
             ));
         }
 
-        buf.resize(len, 0);
-        self.stream.read_exact(&mut buf[..len]).await?;
-
+        // Read straight into spare capacity (no zero-fill of the buffer first).
+        buf.reserve(len);
+        let mut limited = (&mut self.stream).take(len as u64);
+        while buf.len() < len {
+            let n = with_timeout("read", limited.read_buf(buf)).await?;
+            if n == 0 {
+                return Err(Error::from(ErrorKind::UnexpectedEof));
+            }
+        }
         Ok(len)
     }
 
-    pub fn stream(&self) -> &TcpStream {
-        &self.stream
-    }
-
     pub async fn flush(&mut self) -> Result<(), Error> {
-        self.stream.flush().await
+        with_timeout("flush", self.stream.flush()).await
     }
 }
 

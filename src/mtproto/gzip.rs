@@ -2,7 +2,9 @@
 use std::io::{Error, ErrorKind};
 
 /// Pure-Rust RFC 1952 / RFC 1951 gunzip decompressor for `gzip_packed#3072cfa1` MTProto frames.
-pub fn gunzip_pure_rust(data: &[u8]) -> Result<Vec<u8>, Error> {
+/// Inflates a gzip member; fails with `InvalidData` if the output would exceed `max_out` bytes
+/// (guards against decompression bombs).
+pub fn gunzip_pure_rust(data: &[u8], max_out: usize) -> Result<Vec<u8>, Error> {
     if data.len() < 18 || data[0] != 0x1f || data[1] != 0x8b || data[2] != 0x08 {
         return Err(Error::new(ErrorKind::InvalidData, "Invalid gzip header"));
     }
@@ -33,10 +35,11 @@ pub fn gunzip_pure_rust(data: &[u8]) -> Result<Vec<u8>, Error> {
     if pos >= data.len().saturating_sub(8) {
         return Err(Error::new(ErrorKind::UnexpectedEof, "Empty deflate body"));
     }
-    inflate_raw(&data[pos..data.len() - 8])
+    inflate_raw(&data[pos..data.len() - 8], max_out)
 }
 
-fn inflate_raw(input: &[u8]) -> Result<Vec<u8>, Error> {
+fn inflate_raw(input: &[u8], max_out: usize) -> Result<Vec<u8>, Error> {
+    let too_big = || Error::new(ErrorKind::InvalidData, "gzip output exceeds the size limit");
     struct BitReader<'a> {
         data: &'a [u8],
         byte_pos: usize,
@@ -138,7 +141,7 @@ fn inflate_raw(input: &[u8]) -> Result<Vec<u8>, Error> {
         byte_pos: 0,
         bit_pos: 0,
     };
-    let mut out = Vec::with_capacity(input.len() * 2);
+    let mut out = Vec::with_capacity((input.len() * 2).min(max_out));
 
     loop {
         let bfinal = br.read_bits(1)?;
@@ -153,6 +156,9 @@ fn inflate_raw(input: &[u8]) -> Result<Vec<u8>, Error> {
                 br.byte_pos += 4;
                 if br.byte_pos + len > br.data.len() {
                     return Err(Error::new(ErrorKind::UnexpectedEof, "Stored block data EOF"));
+                }
+                if out.len() + len > max_out {
+                    return Err(too_big());
                 }
                 out.extend_from_slice(&br.data[br.byte_pos..br.byte_pos + len]);
                 br.byte_pos += len;
@@ -205,6 +211,9 @@ fn inflate_raw(input: &[u8]) -> Result<Vec<u8>, Error> {
                 loop {
                     let sym = lit_table.decode(&mut br)? as usize;
                     if sym < 256 {
+                        if out.len() >= max_out {
+                            return Err(too_big());
+                        }
                         out.push(sym as u8);
                     } else if sym == 256 {
                         break;
@@ -215,6 +224,9 @@ fn inflate_raw(input: &[u8]) -> Result<Vec<u8>, Error> {
                         let dist_sym = dist_table.decode(&mut br)? as usize;
                         let dist = DIST_BASE[dist_sym] as usize
                             + br.read_bits(DIST_EXTRA[dist_sym])? as usize;
+                        if out.len() + length > max_out {
+                            return Err(too_big());
+                        }
                         if dist > out.len() {
                             return Err(Error::new(ErrorKind::InvalidData, "Invalid LZ77 distance"));
                         }
@@ -232,4 +244,23 @@ fn inflate_raw(input: &[u8]) -> Result<Vec<u8>, Error> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `printf 'hello hello hello hello' | gzip -9n | xxd -i`
+    const HELLO_GZ: [u8; 28] = [
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0xc8, 0x40,
+        0x27, 0x01, 0xe3, 0x51, 0x3d, 0x8d, 0x17, 0x00, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn inflates_and_enforces_output_limit() {
+        let out = gunzip_pure_rust(&HELLO_GZ, 1024).expect("valid gzip");
+        assert_eq!(out, b"hello hello hello hello");
+        assert!(gunzip_pure_rust(&HELLO_GZ, 10).is_err(), "limit must be enforced");
+        assert!(gunzip_pure_rust(&HELLO_GZ[..12], 1024).is_err(), "truncated input must fail");
+    }
 }

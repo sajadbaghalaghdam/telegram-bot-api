@@ -106,7 +106,6 @@ pub async fn upload_and_send_large_file_typed(
 
     let shared_auth = main_conn.cached_auth();
     cache_auth(bot_token, shared_auth);
-    drop(main_conn);
 
     // 3. Upload the 512 KB parts (translated from FileUploader.cpp)
     let plan = PartUpload {
@@ -116,7 +115,9 @@ pub async fn upload_and_send_large_file_typed(
         auth: shared_auth,
         api_id,
     };
-    upload_parts(&plan).await?;
+    // The control connection doubles as the first part worker; another worker's connection
+    // (still open) comes back for the final sendMedia.
+    let mut send_conn = upload_parts(&plan, main_conn).await?;
 
     // 4. Send the uploaded document
     let random_id: i64 = rand::random::<i64>();
@@ -135,7 +136,6 @@ pub async fn upload_and_send_large_file_typed(
         random_id,
     );
 
-    let mut send_conn = MtProtoConnection::connect_with_auth(shared_auth, api_id).await?;
     let send_resp = match send_conn.rpc_call(&send_req).await {
         Ok(resp) => resp,
         Err(e) => {

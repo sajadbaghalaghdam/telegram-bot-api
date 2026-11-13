@@ -25,7 +25,7 @@ pub use crypto::{
 pub use downloader::download_large_file_via_mtproto;
 pub use file_id::{decode_file_id, DecodedFileLocation};
 pub use handshake::{HandshakeResult, MtProtoHandshake};
-pub use packet::{pack_encrypted_message, unpack_encrypted_message, PacketError};
+pub use packet::{pack_encrypted_frame, unpack_encrypted_in_place, PacketError};
 pub use session::MtProtoSession;
 pub use transport::IntermediateTransport;
 pub use uploader::{upload_and_send_large_file, upload_and_send_large_file_typed, MediaAttrs, MediaKind, MtProtoConnection, UploadedMediaResult};
