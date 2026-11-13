@@ -96,9 +96,24 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         Some(lf) => {
             let path = ServerConfig::resolve_in(&effective_files_dir, lf);
             match logging::RotatingFile::open(&path, config.log_max_file_size) {
-                Ok(w) => registry
-                    .with(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(w))
-                    .init(),
+                Ok(w) => {
+                    registry
+                        .with(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(w.clone()))
+                        .init();
+                    // SIGUSR1 reopens the log file after external rotation (C++ uses SIGUSR1; it ignores SIGHUP).
+                    #[cfg(unix)]
+                    if let Ok(mut sig) =
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
+                    {
+                        tokio::spawn(async move {
+                            while sig.recv().await.is_some() {
+                                if let Err(e) = w.reopen() {
+                                    eprintln!("Failed to reopen log file: {e}");
+                                }
+                            }
+                        });
+                    }
+                }
                 Err(e) => {
                     eprintln!("Can't open log file \"{}\": {e}", path.display());
                     std::process::exit(1);
