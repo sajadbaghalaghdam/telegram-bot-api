@@ -468,6 +468,44 @@ async fn local_mode_json_with_local_path_becomes_multipart() {
     assert!(t.contains(r#"{"media":"attach://file_edit","type":"photo"}"#));
 }
 
+#[tokio::test]
+async fn local_mode_every_local_file_of_a_send_is_uploaded_with_it() {
+    let up = echo_upstream().await;
+    let app = TestApp::start("localextra", true, &up).await;
+    let (video, thumb, cover) = (app.dir.join("v.mp4"), app.dir.join("v.thumb.jpg"), app.dir.join("v.cover.jpg"));
+    std::fs::write(&video, b"VIDEODATA").unwrap();
+    std::fs::write(&thumb, b"THUMBDATA").unwrap();
+    std::fs::write(&cover, b"COVERDATA").unwrap();
+
+    // The bot's sendVideo: the video, its thumbnail and its cover are all files on this disk.
+    let body = format!(
+        r#"{{"chat_id":5,"video":"file://{}","thumbnail":"file://{}","cover":"file://{}","duration":3,"supports_streaming":true}}"#,
+        video.display(),
+        thumb.display(),
+        cover.display()
+    );
+    let g = Got::from(
+        app.http.post(format!("{}/bot{TOKEN}/sendVideo", app.base)).header("content-type", "application/json").body(body).send().await.unwrap(),
+    )
+    .await;
+    assert_eq!(g.status, 200);
+
+    let r = up.requests();
+    assert_eq!(r.len(), 1);
+    let t = String::from_utf8_lossy(&r[0].body).to_string();
+    assert!(r[0].content_type.as_deref().unwrap().starts_with("multipart/form-data; boundary="));
+    // Three file parts, each with its bytes ...
+    for (name, data) in [("video", "VIDEODATA"), ("attach_thumbnail", "THUMBDATA"), ("attach_cover", "COVERDATA")] {
+        assert!(t.contains(&format!("name=\"{name}\"")), "{name}");
+        assert!(t.contains(data), "{data}");
+    }
+    // ... the fields refer to the parts, and no `file://` path reaches the cloud.
+    assert!(t.contains("name=\"thumbnail\"\r\n\r\nattach://attach_thumbnail\r\n"));
+    assert!(t.contains("name=\"cover\"\r\n\r\nattach://attach_cover\r\n"));
+    assert!(t.contains("name=\"duration\"\r\n\r\n3\r\n"));
+    assert!(!t.contains("file://"), "{t}");
+}
+
 /// Sends an HTTP request whose body is cut off mid-stream: waits until the temp file of the large
 /// upload exists, closes the connection, and expects the file to be gone afterwards.
 async fn aborted_large_upload_leaves_nothing(app: &TestApp) {

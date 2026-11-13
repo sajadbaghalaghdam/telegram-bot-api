@@ -30,6 +30,9 @@ const MEDIA_FIELDS: &[&str] = &[
     "certificate",
 ];
 
+/// Fields besides [`MEDIA_FIELDS`] that take a file of their own (a video's cover image).
+const EXTRA_FILE_FIELDS: &[&str] = &["cover"];
+
 /// Files above this size cannot go through the HTTP Bot API upload and use MTProto instead.
 const MTPROTO_UPLOAD_THRESHOLD: u64 = 49 * 1024 * 1024;
 
@@ -76,7 +79,7 @@ impl TelegramEngine {
         {
             return None;
         }
-        let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(body) else {
+        let Ok(Value::Object(mut map)) = serde_json::from_slice::<Value>(body) else {
             return None;
         };
 
@@ -121,8 +124,22 @@ impl TelegramEngine {
                 .await,
             );
         }
+        let mut files = vec![(field.to_string(), path)];
+        // Every other file the request names (a video's thumbnail and cover, a document's
+        // thumbnail) is uploaded with it and referred to as `attach://`: left as a `file://` path
+        // the cloud answers "Unsupported URL protocol".
+        for &other in MEDIA_FIELDS.iter().chain(EXTRA_FILE_FIELDS) {
+            if other == field {
+                continue;
+            }
+            let Some(Value::String(s)) = map.get(other) else { continue };
+            let Some(path) = self.resolve_local_path(s).await else { continue };
+            let attach = format!("attach_{other}");
+            map.insert(other.to_string(), Value::String(format!("attach://{attach}")));
+            files.push((attach, path));
+        }
         let plan = Multipart {
-            files: vec![(field.to_string(), path)],
+            files,
             default_name: "file.bin",
             media_json: None,
             skip: field.to_string(),
