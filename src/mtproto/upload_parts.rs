@@ -7,7 +7,6 @@
 //! (copy + in-place encryption) -> socket.
 use std::fs::File;
 use std::io::Error;
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -99,7 +98,7 @@ async fn build_part_query(shared: &Arc<Shared>, mut q: Vec<u8>, part_idx: usize)
 
     let shared = Arc::clone(shared);
     let mut q = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, Error> {
-        shared.file.read_exact_at(&mut q[data_at..], offset as u64)?;
+        super::file_at::read_exact_at(&shared.file, &mut q[data_at..], offset as u64)?;
         Ok(q)
     })
     .await

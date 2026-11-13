@@ -1,6 +1,5 @@
 use bytes::BytesMut;
 use std::io::{Error, ErrorKind};
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -188,7 +187,7 @@ async fn run_writer(
         let end_offset = offset + data.len() as u64;
         let file = Arc::clone(&file);
         let data = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, Error> {
-            file.write_all_at(&data, offset)?;
+            super::file_at::write_all_at(&file, &data, offset)?;
             Ok(data)
         })
         .await
@@ -447,7 +446,7 @@ pub async fn download_large_file_via_mtproto(
     let out_file = Arc::new(out_file);
     {
         let (file, first) = (Arc::clone(&out_file), chunk0.clone());
-        tokio::task::spawn_blocking(move || file.write_all_at(&first, 0)).await.map_err(Error::other)??;
+        tokio::task::spawn_blocking(move || super::file_at::write_all_at(&file, &first, 0)).await.map_err(Error::other)??;
     }
 
     // If file is smaller than 512 KB, download is completely finished in 1 round trip!

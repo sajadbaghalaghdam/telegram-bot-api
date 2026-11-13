@@ -14,6 +14,7 @@ mod bench_tests;
 pub mod connection;
 pub mod crypto;
 pub mod downloader;
+pub mod file_at;
 #[cfg(test)]
 mod e2e_tests;
 pub mod file_id;
