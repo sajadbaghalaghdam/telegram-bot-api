@@ -128,12 +128,10 @@ pub async fn download_large_file_via_mtproto(
     let part_path = target_dir.join(format!(".{}.part", file_name));
 
     // If already fully downloaded and non-empty, return cached disk file
-    if target_path.exists() {
-        if let Ok(meta) = fs::metadata(&target_path).await {
-            if meta.len() > 0 {
-                return Ok((target_path, meta.len()));
-            }
-        }
+    if let Ok(meta) = fs::metadata(&target_path).await
+        && meta.len() > 0
+    {
+        return Ok((target_path, meta.len()));
     }
 
     // 1. Connect and authorize bot to the target DC where the file resides
@@ -156,7 +154,7 @@ pub async fn download_large_file_via_mtproto(
                 if let Some(target_dc) = MtProtoConnection::parse_migrate_dc(&err_msg) {
                     migrations += 1;
                     if migrations > 3 {
-                        return Err(Error::new(ErrorKind::Other, format!("Too many DC migrations: {}", err_msg)));
+                        return Err(Error::other(format!("Too many DC migrations: {}", err_msg)));
                     }
                     main_conn = MtProtoConnection::connect_and_authorize(target_dc, api_id, api_hash, bot_token).await?;
                     continue;
@@ -372,7 +370,7 @@ pub async fn download_large_file_via_mtproto(
             }
             Err(e) if e.is_cancelled() => {}
             Err(e) => {
-                first_err = Some(Error::new(ErrorKind::Other, format!("Worker panicked: {e}")));
+                first_err = Some(Error::other(format!("Worker panicked: {e}")));
             }
         }
         if first_err.is_some() {
@@ -398,7 +396,7 @@ pub async fn download_large_file_via_mtproto(
         }
         Err(e) => {
             let _ = fs::remove_file(&part_path).await;
-            return Err(Error::new(ErrorKind::Other, format!("Writer panicked: {e}")));
+            return Err(Error::other(format!("Writer panicked: {e}")));
         }
     };
 

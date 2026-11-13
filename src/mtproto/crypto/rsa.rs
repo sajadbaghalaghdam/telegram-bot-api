@@ -75,8 +75,8 @@ pub fn rsa_pad_encrypt(data: &[u8], key: &TelegramRsaKey) -> Result<[u8; 256], S
 
         // data_with_hash = reverse(data_padded) || SHA256(temp_key || data_padded)
         let mut hasher = Sha256::new();
-        hasher.update(&temp_key);
-        hasher.update(&data_padded);
+        hasher.update(temp_key);
+        hasher.update(data_padded);
         let hash = hasher.finalize();
 
         let mut data_with_hash = [0u8; 224];

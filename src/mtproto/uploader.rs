@@ -141,9 +141,7 @@ pub async fn upload_and_send_large_file_typed(
         Err(e) => {
             let mut retry_conn = MtProtoConnection::connect_with_auth(shared_auth, api_id).await?;
             retry_conn.rpc_call(&send_req).await.map_err(|e2| {
-                Error::new(
-                    ErrorKind::Other,
-                    format!("MTProto sendMedia failed: {} (retry failed: {})", e, e2),
+                Error::other(format!("MTProto sendMedia failed: {} (retry failed: {})", e, e2),
                 )
             })?
         }

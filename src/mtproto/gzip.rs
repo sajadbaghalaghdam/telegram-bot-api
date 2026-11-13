@@ -183,15 +183,15 @@ fn inflate_raw(input: &[u8]) -> Result<Vec<u8>, Error> {
                             16 => {
                                 let prev = *lens.last().unwrap_or(&0);
                                 let rep = br.read_bits(2)? as usize + 3;
-                                lens.extend(std::iter::repeat(prev).take(rep));
+                                lens.extend(std::iter::repeat_n(prev, rep));
                             }
                             17 => {
                                 let rep = br.read_bits(3)? as usize + 3;
-                                lens.extend(std::iter::repeat(0).take(rep));
+                                lens.extend(std::iter::repeat_n(0, rep));
                             }
                             18 => {
                                 let rep = br.read_bits(7)? as usize + 11;
-                                lens.extend(std::iter::repeat(0).take(rep));
+                                lens.extend(std::iter::repeat_n(0, rep));
                             }
                             _ => return Err(Error::new(ErrorKind::InvalidData, "Invalid CL sym")),
                         }

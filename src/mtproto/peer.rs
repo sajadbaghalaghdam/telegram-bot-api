@@ -15,10 +15,10 @@ pub async fn resolve_input_peer(
     let trimmed = chat_id_str.trim();
     if let Some(uname) = trimmed.strip_prefix('@').or(hint_username) {
         let clean_uname = uname.trim_start_matches('@');
-        if !clean_uname.is_empty() {
-            if let Ok(peer) = resolve_username_mtproto(conn, clean_uname).await {
-                return Ok(peer);
-            }
+        if !clean_uname.is_empty()
+            && let Ok(peer) = resolve_username_mtproto(conn, clean_uname).await
+        {
+            return Ok(peer);
         }
     }
 

@@ -74,10 +74,10 @@ impl MtProtoConnection {
     ) -> Result<Self, Error> {
         let home_dc = home_dc_cache().get(bot_token).map(|v| *v.value()).unwrap_or(1);
         let cache_key = format!("{bot_token}:{home_dc}");
-        if let Some(cached) = auth_cache().get(&cache_key).map(|r| *r.value()) {
-            if let Ok(conn) = Self::connect_with_auth(cached, api_id).await {
-                return Ok(conn);
-            }
+        if let Some(cached) = auth_cache().get(&cache_key).map(|r| *r.value())
+            && let Ok(conn) = Self::connect_with_auth(cached, api_id).await
+        {
+            return Ok(conn);
         }
 
         let mut dc_id = home_dc;
@@ -109,9 +109,7 @@ impl MtProtoConnection {
                 }
             }
         }
-        Err(Error::new(
-            ErrorKind::Other,
-            "Exceeded maximum attempts during bot authorization on home DC",
+        Err(Error::other("Exceeded maximum attempts during bot authorization on home DC",
         ))
     }
 
@@ -177,10 +175,10 @@ impl MtProtoConnection {
         bot_token: &str,
     ) -> Result<Self, Error> {
         let cache_key = format!("{bot_token}:{target_dc}");
-        if let Some(cached) = auth_cache().get(&cache_key).map(|r| *r.value()) {
-            if let Ok(conn) = Self::connect_with_auth(cached, api_id).await {
-                return Ok(conn);
-            }
+        if let Some(cached) = auth_cache().get(&cache_key).map(|r| *r.value())
+            && let Ok(conn) = Self::connect_with_auth(cached, api_id).await
+        {
+            return Ok(conn);
         }
 
         Self::connect_and_authorize_fresh(target_dc, api_id, api_hash, bot_token).await

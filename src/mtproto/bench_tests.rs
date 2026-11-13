@@ -108,8 +108,8 @@ fn ref_ige_encrypt(pt: &[u8], key: &[u8; 32], iv: &[u8; 32]) -> Vec<u8> {
     let (mut pc, mut pp) = ([0u8; 16], [0u8; 16]);
     pc.copy_from_slice(&iv[..16]);
     pp.copy_from_slice(&iv[16..]);
-    for (p, o) in pt.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
-        let mut b = GenericArray::clone_from_slice(p);
+    for (p, o) in pt.as_chunks::<16>().0.iter().zip(out.as_chunks_mut::<16>().0.iter_mut()) {
+        let mut b = GenericArray::clone_from_slice(p.as_slice());
         for i in 0..16 {
             b[i] ^= pc[i];
         }
@@ -118,8 +118,8 @@ fn ref_ige_encrypt(pt: &[u8], key: &[u8; 32], iv: &[u8; 32]) -> Vec<u8> {
             b[i] ^= pp[i];
         }
         o.copy_from_slice(&b);
-        pc.copy_from_slice(o);
-        pp.copy_from_slice(p);
+        pc = *o;
+        pp.copy_from_slice(p.as_slice());
     }
     out
 }
@@ -130,8 +130,8 @@ fn ref_ige_decrypt(ct: &[u8], key: &[u8; 32], iv: &[u8; 32]) -> Vec<u8> {
     let (mut pc, mut pp) = ([0u8; 16], [0u8; 16]);
     pc.copy_from_slice(&iv[..16]);
     pp.copy_from_slice(&iv[16..]);
-    for (x, o) in ct.chunks_exact(16).zip(out.chunks_exact_mut(16)) {
-        let mut b = GenericArray::clone_from_slice(x);
+    for (x, o) in ct.as_chunks::<16>().0.iter().zip(out.as_chunks_mut::<16>().0.iter_mut()) {
+        let mut b = GenericArray::clone_from_slice(x.as_slice());
         for i in 0..16 {
             b[i] ^= pp[i];
         }
@@ -140,8 +140,8 @@ fn ref_ige_decrypt(ct: &[u8], key: &[u8; 32], iv: &[u8; 32]) -> Vec<u8> {
             b[i] ^= pc[i];
         }
         o.copy_from_slice(&b);
-        pc.copy_from_slice(x);
-        pp.copy_from_slice(o);
+        pc = *x;
+        pp = *o;
     }
     out
 }

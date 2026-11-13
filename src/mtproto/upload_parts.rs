@@ -1,6 +1,6 @@
 //! Parallel `upload.saveFilePart` / `upload.saveBigFilePart` workers.
 use bytes::BytesMut;
-use std::io::{Error, ErrorKind};
+use std::io::Error;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -128,9 +128,7 @@ pub async fn upload_parts(plan: &PartUpload<'_>) -> Result<(), Error> {
                         0
                     };
                     if bool_ctor != 0x997275b5 {
-                        return Err(Error::new(
-                            ErrorKind::Other,
-                            format!("upload part returned non-true result (0x{:08x})", bool_ctor),
+                        return Err(Error::other(format!("upload part returned non-true result (0x{:08x})", bool_ctor),
                         ));
                     }
                 }
@@ -149,7 +147,7 @@ pub async fn upload_parts(plan: &PartUpload<'_>) -> Result<(), Error> {
             Ok(Err(e)) => first_err = Some(e),
             Err(e) if e.is_cancelled() => {}
             Err(e) => {
-                first_err = Some(Error::new(ErrorKind::Other, format!("Upload worker panicked: {}", e)));
+                first_err = Some(Error::other(format!("Upload worker panicked: {}", e)));
             }
         }
         if first_err.is_some() {

@@ -257,7 +257,7 @@ impl MtProtoConnection {
         let msg_id = self
             .session
             .generate_msg_id()
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| Error::other(e.to_string()))?;
         let seq_no = self.session.next_seq_no(is_content_related);
         let packet = pack_encrypted_message(
             self.session.auth_key(),
@@ -338,9 +338,7 @@ impl MtProtoConnection {
                         let msg = read_string(&mut inner_cursor).map_err(Self::tl_err)?;
                         results.push((
                             req_msg_id,
-                            Err(Error::new(
-                                ErrorKind::Other,
-                                format!("MTProto RPC Error {}: {}", code, msg),
+                            Err(Error::other(format!("MTProto RPC Error {}: {}", code, msg),
                             )),
                         ));
                         return Ok(());
@@ -369,9 +367,7 @@ impl MtProtoConnection {
                                 let msg = read_string(&mut u_cur).unwrap_or("Unknown RPC error");
                                 results.push((
                                     req_msg_id,
-                                    Err(Error::new(
-                                        ErrorKind::Other,
-                                        format!("MTProto RPC Error {}: {}", code, msg),
+                                    Err(Error::other(format!("MTProto RPC Error {}: {}", code, msg),
                                     )),
                                 ));
                                 return Ok(());

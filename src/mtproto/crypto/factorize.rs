@@ -25,13 +25,13 @@ pub fn is_prime_u64(n: u64) -> bool {
         if n == p {
             return true;
         }
-        if n % p == 0 {
+        if n.is_multiple_of(p) {
             return false;
         }
     }
     let mut d = n - 1;
     let mut s = 0;
-    while d % 2 == 0 {
+    while d.is_multiple_of(2) {
         d /= 2;
         s += 1;
     }
@@ -59,7 +59,7 @@ const MAX_ITERATIONS: u64 = 1 << 22;
 /// Returns `None` if `pq` is < 4, does not fit in 63 bits, is prime, has a factor
 /// >= 2^32, or no factor is found within the iteration cap.
 pub fn factorize(pq: u64) -> Option<(u64, u64)> {
-    if pq < 4 || pq >= (1u64 << 63) || is_prime_u64(pq) {
+    if !(4..(1u64 << 63)).contains(&pq) || is_prime_u64(pq) {
         return None;
     }
     let d = find_factor(pq)?;
@@ -76,7 +76,7 @@ fn find_factor(pq: u64) -> Option<u64> {
         if t * t > pq {
             break;
         }
-        if pq % t == 0 {
+        if pq.is_multiple_of(t) {
             return Some(t);
         }
     }

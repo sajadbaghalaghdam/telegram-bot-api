@@ -99,7 +99,7 @@ fn check_g_residue(g: i32, p: &BigUint) -> bool {
 
 /// p and (p-1)/2 must both be prime, and p must be a full 2048-bit number.
 fn is_good_prime(p: &BigUint) -> bool {
-    if p.bits() != 2048 || p.bit(0) == false {
+    if p.bits() != 2048 || !p.bit(0) {
         return false;
     }
     if *p == telegram_dh_prime() {
@@ -298,7 +298,7 @@ impl<'a> MtProtoHandshake<'a> {
         let prime_for_check = prime.clone();
         let prime_ok = tokio::task::spawn_blocking(move || is_good_prime(&prime_for_check))
             .await
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| Error::other(e.to_string()))?;
         if !prime_ok {
             return Err(Error::new(ErrorKind::InvalidData, "DH prime is not a safe prime"));
         }

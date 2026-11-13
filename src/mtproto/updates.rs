@@ -28,12 +28,11 @@ pub fn parse_send_media_updates(buf: &[u8], random_id: i64) -> (i32, i64, i64, i
             doc_id = i64::from_le_bytes(buf[i + 8..i + 16].try_into().unwrap());
             access_hash = i64::from_le_bytes(buf[i + 16..i + 24].try_into().unwrap());
             let mut cur = &buf[i + 24..];
-            if read_bytes(&mut cur).is_ok() {
-                if let Ok(d) = read_int(&mut cur) {
-                    if d > 1_600_000_000 {
-                        date = d as i64;
-                    }
-                }
+            if read_bytes(&mut cur).is_ok()
+                && let Ok(d) = read_int(&mut cur)
+                && d > 1_600_000_000
+            {
+                date = d as i64;
             }
             break;
         }
