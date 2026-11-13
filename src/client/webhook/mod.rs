@@ -14,10 +14,23 @@
 //!   it is delivered or dropped;
 //! * failures are retried with exponential backoff (`next_retry`), honoring `Retry-After`; an
 //!   update is dropped 23h after it was first seen (the timer restarts on process restart);
-//! * a 2xx reply that is a JSON object with a `method` field is executed as a Bot API call, in a
-//!   detached task (result ignored, never delays delivery);
+//! * a 2xx reply that is a JSON object with a `method` field is executed as a Bot API call by a
+//!   bounded executor (result ignored, never delays delivery; calls beyond the bound are dropped);
 //! * `pending_update_count` of getWebhookInfo counts updates loaded locally and not yet finished;
 //!   the backlog still held by upstream is not included.
+//!
+//! Beyond the C++ behaviour, updates are never parsed into `serde_json::Value`: the poll reply is
+//! kept as one `Bytes`, every update is a slice of it (see `update` and `poll`) and is posted to
+//! the webhook byte for byte.
+//!
+//! Module map (one responsibility each):
+//! * `worker` poll loop; `registry` start/stop/exit protocol of workers in the engine;
+//! * `ctx` state shared by the loop and the queue tasks; `queue` per-chat FIFOs + scheduler;
+//!   `window` offset watermark; `update` update_id / queue key extraction;
+//! * `poll` getUpdates request/reply handling; `delivery` HTTP delivery + retries;
+//!   `reply` webhook-reply method calls; `retry` pure retry/backoff rules;
+//! * `args` / `validation` setWebhook parameters; `restore` start-up restore; `throttle`
+//!   setWebhook rate limit; `state` getWebhookInfo state.
 
 mod args;
 mod ctx;

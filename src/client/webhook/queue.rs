@@ -16,6 +16,22 @@ pub(super) struct Item {
     pub(super) first_seen: Instant,
 }
 
+/// Parameters of the next getUpdates call.
+#[derive(Debug, PartialEq)]
+pub(super) struct PollPlan {
+    pub(super) offset: i64,
+    pub(super) limit: usize,
+    /// Updates are loaded but unfinished: upstream still holds them, so a poll answers at once
+    /// and long polling would not help.
+    pub(super) busy: bool,
+    /// Enough new updates fit to justify polling right now; otherwise poll only once
+    /// [`MIN_POLL_GAP`] has passed since the previous poll.
+    pub(super) worthwhile: bool,
+}
+
+/// Minimum spacing of polls that would fetch only a few new updates.
+pub(super) const MIN_POLL_GAP: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Scheduler state: the offset window plus the per-queue FIFOs. A queue key exists exactly while
 /// its task is running, so an idle bot holds no per-chat state.
 pub(super) struct Scheduler {
@@ -67,16 +83,25 @@ impl Scheduler {
         next
     }
 
-    /// `(offset, limit)` for the next poll, or None while the window is full: at most `cap`
-    /// updates may be loaded at once, and since upstream re-sends everything >= offset, the
-    /// window (unfinished + finished-above-watermark) must stay below one poll page.
-    pub(super) fn poll_window(&self, cap: usize) -> Option<(i64, usize)> {
+    /// The next poll, or None while the window is full: at most `cap` updates may be loaded at
+    /// once, and since upstream re-sends everything >= offset, the window (unfinished +
+    /// finished-above-watermark) must stay below one poll page.
+    pub(super) fn poll_window(&self, cap: usize) -> Option<PollPlan> {
         let room = cap.saturating_sub(self.window.unfinished());
         let occ = self.window.occupancy();
-        if room == 0 || occ >= POLL_LIMIT {
+        let fits = room.min(POLL_LIMIT.saturating_sub(occ));
+        if fits == 0 {
             return None;
         }
-        Some((self.window.offset(), POLL_LIMIT.min(occ + room)))
+        Some(PollPlan {
+            offset: self.window.offset(),
+            limit: POLL_LIMIT.min(occ + room),
+            busy: occ > 0,
+            // A quarter of the largest possible load: every poll re-reads all unconfirmed
+            // updates, so polling after each single finished update under load would mostly
+            // fetch (and skip) duplicates.
+            worthwhile: fits >= (cap.min(POLL_LIMIT) / 4).max(1),
+        })
     }
 
     #[cfg(test)]
@@ -116,24 +141,50 @@ mod tests {
         assert_eq!(s.admit(a, item(5)), Some(true));
     }
 
+    fn plan(s: &Scheduler, cap: usize) -> Option<(i64, usize, bool, bool)> {
+        s.poll_window(cap).map(|p| (p.offset, p.limit, p.busy, p.worthwhile))
+    }
+
     #[test]
     fn window_respects_initial_offset_and_bounds() {
         let mut s = Scheduler::new(0);
         // cap = 2 * max_connections: room shrinks as updates are loaded
-        assert_eq!(s.poll_window(4), Some((0, 4)));
+        assert_eq!(plan(&s, 4), Some((0, 4, false, true)));
         for id in 1..=4 {
             s.admit(QueueId::Solo(id), item(id));
         }
-        assert_eq!(s.poll_window(4), None, "loaded updates reached 2*max_connections");
+        assert_eq!(plan(&s, 4), None, "loaded updates reached 2*max_connections");
         s.window.finish(1);
-        assert_eq!(s.poll_window(4), Some((2, 4)));
+        assert_eq!(plan(&s, 4), Some((2, 4, true, true)));
         // limit counts ids upstream re-sends (everything >= offset)
         let mut big = Scheduler::new(0);
         for id in 1..=99 {
             big.admit(QueueId::Solo(id), item(id));
         }
-        assert_eq!(big.poll_window(1000), Some((1, 100)));
+        assert_eq!(plan(&big, 1000).map(|p| (p.0, p.1)), Some((1, 100)));
         big.admit(QueueId::Solo(100), item(100));
-        assert_eq!(big.poll_window(1000), None, "one poll page is full");
+        assert_eq!(plan(&big, 1000), None, "one poll page is full");
+    }
+
+    #[test]
+    fn polls_that_fetch_few_new_updates_are_not_worthwhile() {
+        // cap 200 but one page holds 100: a poll is worthwhile once 25 new updates fit
+        let mut s = Scheduler::new(0);
+        for id in 1..=80 {
+            s.admit(QueueId::Solo(id), item(id));
+        }
+        assert_eq!(plan(&s, 200), Some((1, 100, true, false)), "20 fit: only a rate-limited poll");
+        for id in 1..=5 {
+            s.window.finish(id);
+        }
+        assert_eq!(plan(&s, 200), Some((6, 100, true, true)), "25 fit now");
+        // small caps: a quarter of the cap, at least one
+        let mut small = Scheduler::new(0);
+        for id in 1..=7 {
+            small.admit(QueueId::Solo(id), item(id));
+        }
+        assert_eq!(plan(&small, 8), Some((1, 8, true, false)), "1 of 8 fits, 2 needed");
+        small.window.finish(1);
+        assert_eq!(plan(&small, 8), Some((2, 8, true, true)));
     }
 }

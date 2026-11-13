@@ -15,7 +15,7 @@ use tokio::task::JoinSet;
 use super::ctx::Ctx;
 use super::delivery::{run_queue, Target};
 use super::poll::{classify_poll, poll_error_text, PollOutcome, PollReply, Poller};
-use super::queue::Item;
+use super::queue::{Item, MIN_POLL_GAP};
 use super::registry::{is_current, ExitGuard};
 use super::reply::ReplySink;
 use super::retry::poll_backoff;
@@ -140,6 +140,7 @@ pub(super) async fn run_worker(engine: Arc<TelegramEngine>, cfg: WorkerConfig, s
 
     let mut fails: u32 = 0;
     let mut last_conflict_fix: Option<Instant> = None;
+    let mut last_poll: Option<Instant> = None;
     loop {
         while let Some(r) = tasks.try_join_next() {
             if let Err(e) = r
@@ -156,20 +157,24 @@ pub(super) async fn run_worker(engine: Arc<TelegramEngine>, cfg: WorkerConfig, s
             break;
         }
 
-        let page = {
-            let g = ctx.lock();
-            g.poll_window(cap).map(|(o, l)| (o, l, g.window.occupancy() > 0))
-        };
-        let Some((offset, limit, busy)) = page else {
+        let Some(plan) = ctx.lock().poll_window(cap) else {
             wait_progress(&ctx, BUSY_POLL_INTERVAL).await;
             continue;
         };
+        if !plan.worthwhile
+            && let Some(gap) = last_poll.and_then(|t| MIN_POLL_GAP.checked_sub(t.elapsed()))
+        {
+            wait_progress(&ctx, gap).await;
+            continue;
+        }
+        let busy = plan.busy;
 
         // Long polling only helps while nothing is outstanding: upstream answers instantly when
         // it still holds unconfirmed updates >= offset.
         let timeout = if busy { 0 } else { LONG_POLL_SECS };
+        last_poll = Some(Instant::now());
         let res = tokio::select! {
-            r = poller.fetch(offset, limit, timeout) => r,
+            r = poller.fetch(plan.offset, plan.limit, timeout) => r,
             _ = ctx.closed_notify.notified() => continue,
         };
         let (body, transport_err) = match res {
