@@ -47,8 +47,20 @@ fn miller_rabin(n: &BigUint) -> bool {
     let n_minus_1 = n - &one;
     let s = n_minus_1.trailing_zeros().unwrap_or(0);
     let d = &n_minus_1 >> s;
-    'witness: for a in [2u32, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
-        let mut x = BigUint::from(a).modpow(&d, n);
+    // Fixed small bases plus random bases (defends against crafted strong pseudoprimes).
+    let mut bases: Vec<BigUint> = [2u32, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
+        .iter()
+        .map(|&b| BigUint::from(b))
+        .collect();
+    {
+        use num_bigint::RandBigInt;
+        let mut rng = rand::thread_rng();
+        for _ in 0..8 {
+            bases.push(rng.gen_biguint_range(&BigUint::from(2u32), &n_minus_1));
+        }
+    }
+    'witness: for a in bases {
+        let mut x = a.modpow(&d, n);
         if x == one || x == n_minus_1 {
             continue;
         }
@@ -63,10 +75,35 @@ fn miller_rabin(n: &BigUint) -> bool {
     true
 }
 
+/// Telegram's well-known 2048-bit safe DH prime (g = 3); matching it skips primality testing.
+const TELEGRAM_DH_PRIME_HEX: &str = "C71CAEB9C6B1C9048E6C522F70F13F73980D40238E3E21C14934D037563D930F48198A0AA7C14058229493D22530F4DBFA336F6E0AC925139543AED44CCE7C3720FD51F69458705AC68CD4FE6B6B13ABDC9746512969328454F18FAF8C595F642477FE96BB2A941D5BCD1D4AC8CC49880708FA9B378E3C4F3A9060BEE67CF9A4A4A695811051907E162753B56B0F6B410DBA74D8A84B2A14B3144E0EF1284754FD17ED950D5965B4B9DD46582DB1178D169C6BC465B0D6FF9CA3928FEF5B9AE4E418FC15E83EBEA0F87FA9FF5EED70050DED2849F47BF959D956850CE929851F0D8115F635B105EE2E4E15D04B2454BF6F4FADF034B10403119CD8E3B92FCC5B";
+
+fn telegram_dh_prime() -> BigUint {
+    BigUint::parse_bytes(TELEGRAM_DH_PRIME_HEX.as_bytes(), 16).expect("valid hex")
+}
+
+/// Subgroup residue rule: g must generate the quadratic-residue subgroup of the safe prime p
+/// (same rules as TDLib / OpenSSL DH_check for g in 2..=7).
+fn check_g_residue(g: i32, p: &BigUint) -> bool {
+    let m = |k: u32| -> u32 { u32::try_from(p % BigUint::from(k)).unwrap_or(u32::MAX) };
+    match g {
+        2 => m(8) == 7,
+        3 => m(3) == 2,
+        4 => true,
+        5 => matches!(m(5), 1 | 4),
+        6 => matches!(m(24), 19 | 23),
+        7 => matches!(m(7), 3 | 5 | 6),
+        _ => false,
+    }
+}
+
 /// p and (p-1)/2 must both be prime, and p must be a full 2048-bit number.
 fn is_good_prime(p: &BigUint) -> bool {
     if p.bits() != 2048 || p.bit(0) == false {
         return false;
+    }
+    if *p == telegram_dh_prime() {
+        return true;
     }
     let q: BigUint = (p - 1u32) >> 1;
     miller_rabin(p) && miller_rabin(&q)
@@ -254,7 +291,15 @@ impl<'a> MtProtoHandshake<'a> {
         if dh_prime_bytes.len() != 256 || !(2..=7).contains(&g) {
             return Err(Error::new(ErrorKind::InvalidData, "Invalid DH prime length or generator"));
         }
-        if !is_good_prime(&prime) {
+        if !check_g_residue(g, &prime) {
+            return Err(Error::new(ErrorKind::InvalidData, "DH prime fails subgroup check for generator g"));
+        }
+        // Primality testing of an unknown 2048-bit prime is CPU heavy: keep it off the async workers.
+        let prime_for_check = prime.clone();
+        let prime_ok = tokio::task::spawn_blocking(move || is_good_prime(&prime_for_check))
+            .await
+            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+        if !prime_ok {
             return Err(Error::new(ErrorKind::InvalidData, "DH prime is not a safe prime"));
         }
         if !dh_value_in_range(&g_a, &prime) {
@@ -412,5 +457,35 @@ mod tests {
         assert!(miller_rabin(&BigUint::from(1000000007u64)));
         assert!(!miller_rabin(&BigUint::from(1000000007u64 * 3)));
         assert!(!is_good_prime(&BigUint::from(23u32)));
+    }
+
+    #[test]
+    fn telegram_prime_fast_path_and_residue() {
+        let p = telegram_dh_prime();
+        assert_eq!(p.bits(), 2048);
+        assert!(is_good_prime(&p));
+        // The hardcoded constant really is a safe prime (full MR, not just the fast path).
+        assert!(miller_rabin(&p) && miller_rabin(&((&p - 1u32) >> 1)));
+        assert!(check_g_residue(3, &p)); // Telegram uses g = 3
+        assert!(!check_g_residue(2, &p));
+        assert!(!check_g_residue(8, &p));
+    }
+
+    #[test]
+    fn composite_2048_bit_rejected() {
+        let p = telegram_dh_prime() + 6u32; // keeps p mod 3 == 2 but is not the safe prime
+        assert!(check_g_residue(3, &p));
+        assert!(!is_good_prime(&p));
+    }
+
+    #[test]
+    fn residue_rules_small() {
+        let c = |g, p: u32| check_g_residue(g, &BigUint::from(p));
+        assert!(c(2, 23) && !c(2, 11));
+        assert!(c(3, 11) && !c(3, 13));
+        assert!(c(4, 7));
+        assert!(c(5, 11) && c(5, 19) && !c(5, 7));
+        assert!(c(6, 19) && c(6, 23) && !c(6, 11));
+        assert!(c(7, 17) && c(7, 19) && c(7, 13) && !c(7, 29));
     }
 }
