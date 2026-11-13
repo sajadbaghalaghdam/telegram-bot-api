@@ -134,6 +134,8 @@ Options:
       --http-port <PORT>                         HTTP listening port [default: 8081]
       --http-ip-address <IP>                     HTTP IP address [default: 0.0.0.0]
       --http-stat-port <PORT>                    HTTP statistics listening port (0 or unset disables)
+      --proxy <URL>                              HTTP/SOCKS5 proxy for outgoing webhook requests [env: TELEGRAM_PROXY=]
+      --upstream-url <URL>                       Base URL of the upstream Bot API [env: TELEGRAM_UPSTREAM_URL=] [default: https://api.telegram.org]
       --log <PATH>                               Path to log file
   -v, --verbosity <LEVEL>                        Log verbosity (0=off, 1=error, 2=warn, 3=info, 4=debug, 5+=trace) [default: 0]; RUST_LOG (non-empty) overrides
   -h, --help                                     Print help

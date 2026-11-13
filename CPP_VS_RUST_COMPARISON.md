@@ -32,6 +32,7 @@ This document provides a line-by-line comparison of all **24 CLI options**, runt
 | 22 | `--main-thread-affinity=<mask>` | `--main-thread-affinity <mask>` | — | **No-op**: Parsed but main-thread affinity is **not** applied. |
 | 23 | `-h` / `--help` | `-h` / `--help` | — | **Equivalent**: Prints usage and exits with code `0`; the text is clap-generated, not the C++ layout. |
 | 24 | `-V` / `--version` | `-V` / `--version` | — | **Differs**: C++ has `--version` only (prints `Bot API 10.4`). Rust (clap) also accepts `-V` and prints `telegram-bot-api-rs 10.3`; exits with code `0`. |
+| 25 | — | `--upstream-url <url>` | `TELEGRAM_UPSTREAM_URL` | **Rust-only extension**: base URL the server relays Bot API calls to (default `https://api.telegram.org`). Must be an `http`/`https` URL with a host and no query or fragment (validated at argument parsing; trailing `/` is stripped). The C++ server talks MTProto to the Telegram DCs and has no equivalent; this exists for tests, benchmarks (`bench/`) and private mirrors. |
 
 ---
 

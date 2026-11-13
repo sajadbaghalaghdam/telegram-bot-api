@@ -159,18 +159,21 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Configured outgoing HTTP proxy: {}", p);
     }
 
-    let engine = Arc::new(
-        TelegramEngine::with_options(
-            config.local_mode,
-            effective_files_dir,
-            effective_temp_dir,
-            storage,
-            proxy_url.as_deref(),
-            token_filter,
-            config.effective_max_webhook_connections(),
-        )
-        .with_api_credentials(config.api_id, config.api_hash.clone()),
-    );
+    let mut engine = TelegramEngine::with_options(
+        config.local_mode,
+        effective_files_dir,
+        effective_temp_dir,
+        storage,
+        proxy_url.as_deref(),
+        token_filter,
+        config.effective_max_webhook_connections(),
+    )
+    .with_api_credentials(config.api_id, config.api_hash.clone());
+    if config.upstream_url != config::DEFAULT_UPSTREAM_URL {
+        tracing::info!("Using upstream Bot API at {}", config.upstream_url);
+    }
+    engine.upstream_base_url = config.upstream_url.clone();
+    let engine = Arc::new(engine);
 
     // Bind both listeners before restoring webhooks so a port conflict fails before any side effects.
     let listener = tokio::net::TcpListener::bind(addr)
