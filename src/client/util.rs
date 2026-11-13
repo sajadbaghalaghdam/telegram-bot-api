@@ -1,4 +1,6 @@
-//! Small allocation-free helpers shared by the relay modules.
+//! Small helpers shared by the relay modules and handlers.
+
+use std::path::{Path, PathBuf};
 
 /// ASCII-lowercases `s` into `buf` without allocating. Strings longer than the buffer are returned
 /// unchanged: no method name we match on is that long, so they can never match anyway.
@@ -13,9 +15,40 @@ pub fn ascii_lower<'a>(s: &'a str, buf: &'a mut [u8; 32]) -> &'a str {
     std::str::from_utf8(out).unwrap_or(s)
 }
 
+/// A file that is removed when the guard is dropped, on every exit path (success, `?`, panic and
+/// cancellation of the owning future when the client disconnects).
+pub struct TempFile(PathBuf);
+
+impl TempFile {
+    pub fn new(path: PathBuf) -> Self {
+        Self(path)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        // Errors are ignored: the file may never have been created.
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temp_file_is_removed_on_drop() {
+        let p = std::env::temp_dir().join(format!("tempfile_guard_{}", std::process::id()));
+        std::fs::write(&p, b"x").unwrap();
+        drop(TempFile::new(p.clone()));
+        assert!(!p.exists());
+        // dropping a guard for a file that never existed is fine
+        drop(TempFile::new(p));
+    }
 
     #[test]
     fn lowercases_without_alloc() {

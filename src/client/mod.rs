@@ -7,7 +7,7 @@ pub mod relay;
 pub mod reply;
 pub mod token;
 pub mod upload;
-mod util;
+pub mod util;
 pub mod webhook;
 pub mod webhook_api;
 

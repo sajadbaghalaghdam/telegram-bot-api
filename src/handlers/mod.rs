@@ -1,11 +1,11 @@
 pub mod bot;
 pub mod files;
 pub mod generic;
+mod large_upload;
 pub mod stats;
+pub mod test_dc;
 
 pub use bot::{close, get_me, log_out};
-pub use files::{serve_file, serve_test_file};
-pub use generic::{
-    fallback_404_handler, generic_get_handler, generic_get_test_handler, generic_post_handler,
-    generic_post_test_handler,
-};
+pub use files::serve_file;
+pub use generic::{fallback_404_handler, relay_handler};
+pub use test_dc::{relay_test_handler, serve_test_file};

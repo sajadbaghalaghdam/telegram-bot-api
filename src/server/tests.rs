@@ -429,3 +429,90 @@ async fn local_mode_json_with_local_path_becomes_multipart() {
     assert!(t.contains("name=\"file_edit\""));
     assert!(t.contains(r#"{"media":"attach://file_edit","type":"photo"}"#));
 }
+
+/// Sends an HTTP request whose body is cut off mid-stream: waits until the temp file of the large
+/// upload exists, closes the connection, and expects the file to be gone afterwards.
+async fn aborted_large_upload_leaves_nothing(app: &TestApp) {
+    use tokio::io::AsyncWriteExt;
+    let addr = app.base.trim_start_matches("http://").to_string();
+    let mut s = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let head = format!(
+        "POST /bot{TOKEN}/sendVideo HTTP/1.1\r\nHost: x\r\nContent-Type: multipart/form-data; boundary=B\r\nContent-Length: 60000000\r\n\r\n"
+    );
+    let part = "--B\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n5\r\n--B\r\nContent-Disposition: form-data; name=\"video\"; filename=\"v.mp4\"\r\nContent-Type: video/mp4\r\n\r\n0123456789";
+    s.write_all(head.as_bytes()).await.unwrap();
+    s.write_all(part.as_bytes()).await.unwrap();
+    s.flush().await.unwrap();
+    let tmp_files = || -> usize {
+        std::fs::read_dir(&app.dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with("mtproto_upload_"))
+            .count()
+    };
+    for _ in 0..100 {
+        if tmp_files() > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(tmp_files(), 1, "the large upload is being spooled to a temp file");
+    // The connection dies in the middle of the file part.
+    drop(s);
+    for _ in 0..150 {
+        if tmp_files() == 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("temp file of an aborted large upload was not removed");
+}
+
+async fn call_test_dc(status: u16, body: &'static str) -> (Got, Vec<String>) {
+    let up = MockUpstream::start(move |_| {
+        let mut r = Reply::json(status, body);
+        r.headers.push(("retry-after", "7".to_string()));
+        r
+    })
+    .await;
+    let app = TestApp::start(&format!("testdc{status}"), false, &up).await;
+    let resp = app.http.post(format!("{}/test/bot{TOKEN}/getMe?a=b", app.base)).body("x=1").send().await.unwrap();
+    let got = Got::from(resp).await;
+    (got, up.requests().into_iter().map(|r| r.target).collect())
+}
+
+#[tokio::test]
+async fn test_dc_relay_uses_configured_upstream_and_passes_status() {
+    let (g, paths) = call_test_dc(200, r#"{"ok":true,"result":1}"#).await;
+    assert_eq!(g.status, 200);
+    assert_eq!(paths, [format!("/test/bot{TOKEN}/getMe?a=b")]);
+
+    let (g, _) = call_test_dc(
+        429,
+        r#"{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 7","parameters":{"retry_after":7}}"#,
+    )
+    .await;
+    assert_eq!(g.status, 429);
+    assert_eq!(g.retry_after.as_deref(), Some("7"));
+
+    let (g, _) = call_test_dc(502, "<html>oops</html>").await;
+    assert_eq!(g.status, 502);
+    let j: serde_json::Value = serde_json::from_slice(&g.body).unwrap();
+    assert_eq!((j["ok"].as_bool(), j["error_code"].as_i64()), (Some(false), Some(502)));
+}
+
+#[tokio::test]
+async fn test_dc_files_come_from_the_configured_upstream() {
+    let up = MockUpstream::start(|_| Reply::bytes(200, b"abc".to_vec())).await;
+    let app = TestApp::start("testdcfile", false, &up).await;
+    let g = Got::from(app.http.get(format!("{}/test/file/bot{TOKEN}/documents/f.bin", app.base)).send().await.unwrap()).await;
+    assert_eq!((g.status, g.body.as_slice()), (200, &b"abc"[..]));
+    assert_eq!(up.requests()[0].target, format!("/test/file/bot{TOKEN}/documents/f.bin"));
+}
+
+#[tokio::test]
+async fn aborted_large_multipart_upload_leaves_no_temp_file() {
+    let up = echo_upstream().await;
+    let app = TestApp::start("largeabort", false, &up).await;
+    aborted_large_upload_leaves_nothing(&app).await;
+}

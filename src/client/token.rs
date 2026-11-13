@@ -50,6 +50,17 @@ impl TelegramEngine {
     }
 }
 
+/// True if an integer prints back as the very same string: no `+`, no leading zeros, no `-0`.
+/// (Called for strings that already parse as `i64`; allocation-free, unlike formatting the value.)
+fn is_canonical_int(s: &str) -> bool {
+    let digits = s.strip_prefix('-').unwrap_or(s).as_bytes();
+    match digits {
+        [b'0'] => s.len() == 1,
+        [b'1'..=b'9', rest @ ..] => rest.iter().all(u8::is_ascii_digit),
+        _ => false,
+    }
+}
+
 /// Pure token validation matching C++ ClientManager::send: structural problems and out-of-range ids -> 401,
 /// ids rejected by `--filter <remainder>/<modulo>` -> 421.
 pub fn validate_token(token: &str, filter: Option<(u64, u64)>) -> Result<(), TelegramError> {
@@ -62,7 +73,7 @@ pub fn validate_token(token: &str, filter: Option<(u64, u64)>) -> Result<(), Tel
     };
     let forbidden = || TelegramError::MisdirectedRequest("forbidden token specified".to_string());
     // C++ to_integer_safe: the parsed value must print back as the same string ("+1", "-0", "-05" are rejected).
-    let parsed = id_str.parse::<i64>().ok().filter(|id| id.to_string() == id_str);
+    let parsed = id_str.parse::<i64>().ok().filter(|_| is_canonical_int(id_str));
     let Some(id) = parsed else {
         return Err(forbidden());
     };

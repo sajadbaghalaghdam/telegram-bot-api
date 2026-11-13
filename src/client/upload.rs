@@ -10,6 +10,7 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 
 use super::engine::{TelegramEngine, STREAM_BUFFER_SIZE};
+use super::util::TempFile;
 use crate::error::{TelegramError, TelegramResult};
 use crate::models::File;
 use crate::mtproto::{MediaAttrs, MediaKind};
@@ -189,14 +190,15 @@ impl TelegramEngine {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let temp_path = temp_dir.join(format!("url_{}_{}", nanos, url_file_name));
+        // Removed on every exit path, including a failed download and cancellation.
+        let temp = TempFile::new(temp_dir.join(format!("url_{}_{}", nanos, url_file_name)));
 
         let mut get_resp = match self.client.get(remote_url).send().await {
             Ok(r) if r.status().is_success() => r,
             _ => return None,
         };
 
-        let out_file = match fs::File::create(&temp_path).await {
+        let out_file = match fs::File::create(temp.path()).await {
             Ok(f) => f,
             Err(e) => {
                 return Some(Err(TelegramError::Internal(format!(
@@ -205,15 +207,27 @@ impl TelegramEngine {
             }
         };
         let mut writer = tokio::io::BufWriter::with_capacity(STREAM_BUFFER_SIZE, out_file);
-        while let Ok(Some(chunk)) = get_resp.chunk().await {
-            if let Err(e) = writer.write_all(&chunk).await {
-                let _ = fs::remove_file(&temp_path).await;
-                return Some(Err(TelegramError::Internal(format!(
-                    "Failed writing remote URL stream: {e}"
-                ))));
+        loop {
+            match get_resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    if let Err(e) = writer.write_all(&chunk).await {
+                        return Some(Err(TelegramError::Internal(format!(
+                            "Failed writing remote URL stream: {e}"
+                        ))));
+                    }
+                }
+                Ok(None) => break,
+                // A broken download must not be uploaded as if it were the whole file.
+                Err(e) => {
+                    return Some(Err(TelegramError::Internal(format!(
+                        "Failed reading remote URL stream: {e}"
+                    ))));
+                }
             }
         }
-        let _ = writer.flush().await;
+        if let Err(e) = writer.flush().await {
+            return Some(Err(TelegramError::Internal(format!("Failed writing remote URL stream: {e}"))));
+        }
         drop(writer);
 
         let res = self
@@ -221,13 +235,12 @@ impl TelegramEngine {
                 token,
                 method,
                 chat_id: chat_id_str,
-                path: &temp_path,
+                path: temp.path(),
                 caption,
                 file_name: Some(&url_file_name),
                 extra_fields: None,
             })
             .await;
-        let _ = fs::remove_file(&temp_path).await;
         Some(res)
     }
 

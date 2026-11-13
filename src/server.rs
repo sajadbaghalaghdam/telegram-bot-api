@@ -76,16 +76,16 @@ pub fn create_router(state: AppState) -> Router {
         .route("/bot/{token}/logOut", post(handlers::log_out).get(handlers::log_out))
 
         // Universal Routes for 100% of all 185+ Telegram Bot API methods (JSON, Multipart, Form, Query)
-        .route("/{token}/{method}", post(handlers::generic_post_handler).get(handlers::generic_get_handler))
-        .route("/bot/{token}/{method}", post(handlers::generic_post_handler).get(handlers::generic_get_handler))
+        .route("/{token}/{method}", post(handlers::relay_handler).get(handlers::relay_handler))
+        .route("/bot/{token}/{method}", post(handlers::relay_handler).get(handlers::relay_handler))
 
         // File download routes (/file/bot{token}/{file_path} and /file/{token}/{file_path})
         .route("/file/{token}/{*file_path}", get(handlers::serve_file))
         .route("/file/bot/{token}/{*file_path}", get(handlers::serve_file))
 
         // Test DC environment routes (matching official HttpServer.h /test/ routes)
-        .route("/test/{token}/{method}", post(handlers::generic_post_test_handler).get(handlers::generic_get_test_handler))
-        .route("/test/bot/{token}/{method}", post(handlers::generic_post_test_handler).get(handlers::generic_get_test_handler))
+        .route("/test/{token}/{method}", post(handlers::relay_test_handler).get(handlers::relay_test_handler))
+        .route("/test/bot/{token}/{method}", post(handlers::relay_test_handler).get(handlers::relay_test_handler))
         .route("/test/file/{token}/{*file_path}", get(handlers::serve_test_file))
         .route("/test/file/bot/{token}/{*file_path}", get(handlers::serve_test_file))
 
