@@ -92,6 +92,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         fail(e);
     }
     let registry = tracing_subscriber::registry().with(filter);
+    // Handle kept for SIGUSR1 reopen; None when logging to stderr.
+    let mut log_writer: Option<logging::RotatingFile> = None;
     match config.log_file.as_deref() {
         Some(lf) => {
             let path = ServerConfig::resolve_in(&effective_files_dir, lf);
@@ -100,18 +102,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                     registry
                         .with(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(w.clone()))
                         .init();
-                    // SIGUSR1 reopens the log file after external rotation (C++ uses SIGUSR1; it ignores SIGHUP).
-                    #[cfg(unix)]
-                    if let Ok(mut sig) =
-                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())
-                    {
-                        tokio::spawn(async move {
-                            while sig.recv().await.is_some() {
-                                if let Err(e) = w.reopen() {
-                                    eprintln!("Failed to reopen log file: {e}");
-                                }
-                            }
-                        });
+                    log_writer = Some(w);
+                    let rust_log_set = std::env::var("RUST_LOG").map(|v| !v.trim().is_empty()).unwrap_or(false);
+                    if config.verbosity <= 0 && !rust_log_set {
+                        eprintln!("Note: --verbosity 0 logs nothing, so the log file will stay empty; use -v 3 (or higher) to log.");
                     }
                 }
                 Err(e) => {
@@ -121,6 +115,33 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         None => registry.with(tracing_subscriber::fmt::layer()).init(),
+    }
+
+    // Like C++ telegram-bot-api.cpp: SIGUSR1 is always handled (reopens the log file if there is one,
+    // otherwise it is a no-op) and SIGHUP is ignored; neither may terminate the process.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::user_defined1()) {
+            Ok(mut sig) => {
+                tokio::spawn(async move {
+                    while sig.recv().await.is_some() {
+                        if let Some(w) = &log_writer {
+                            if let Err(e) = w.reopen() {
+                                eprintln!("Failed to reopen log file: {e}");
+                            }
+                        }
+                    }
+                });
+            }
+            Err(e) => eprintln!("Failed to install SIGUSR1 handler: {e}"),
+        }
+        match signal(SignalKind::hangup()) {
+            Ok(mut sig) => {
+                tokio::spawn(async move { while sig.recv().await.is_some() {} });
+            }
+            Err(e) => eprintln!("Failed to ignore SIGHUP: {e}"),
+        }
     }
 
     tracing::info!(
