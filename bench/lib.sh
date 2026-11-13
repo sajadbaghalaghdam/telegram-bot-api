@@ -30,7 +30,7 @@ start_server() {
   local wrap="$1"; shift
   DATA="$SCRATCH/data"; rm -rf "$DATA"; mkdir -p "$DATA"
   local t0; t0=$(date +%s%N)
-  BENCH_UPSTREAM_BASE_URL="$MOCK_URL" $wrap "$B/server-bench" --api-id 12345 --api-hash 0123456789abcdef \
+  $wrap "$B/server-bench" --upstream-url "$MOCK_URL" --api-id 12345 --api-hash 0123456789abcdef \
     -p "$PORT_SRV" -d "$DATA" -t temp "$@" >"$SCRATCH/server.log" 2>&1 &
   wait_port "$PORT_SRV" 20 || return 1
   STARTUP_MS=$(( ($(date +%s%N) - t0) / 1000000 ))
