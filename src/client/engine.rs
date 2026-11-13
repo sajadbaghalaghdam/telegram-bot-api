@@ -12,6 +12,7 @@ use tokio::sync::Semaphore;
 use tokio::task::AbortHandle;
 use tokio_util::io::ReaderStream;
 
+use crate::mtproto::{MediaAttrs, MediaKind};
 use crate::error::{TelegramError, TelegramResult};
 use crate::models::{
     ApiResponse, DeleteMessageRequest, EditMessageTextRequest, File, GetFileRequest,
@@ -457,7 +458,7 @@ impl TelegramEngine {
         }
 
         // 2. Execute Pure-Rust MTProto 2.0 parallel 512 KB chunked upload + messages.sendMedia
-        let uploaded = crate::mtproto::upload_and_send_large_file(
+        let uploaded = crate::mtproto::upload_and_send_large_file_typed(
             self.api_id,
             &self.api_hash,
             token,
@@ -466,6 +467,7 @@ impl TelegramEngine {
             local_path,
             caption,
             custom_file_name,
+            media_attrs_for(method, extra_fields),
         )
         .await
         .map_err(|e| TelegramError::BadRequest(format!("MTProto upload failed: {e}")))?;
@@ -488,19 +490,15 @@ impl TelegramEngine {
             .await;
 
         // 4. Build standard Bot API Message JSON response matching requested method
-        let m_lower = method.to_ascii_lowercase();
-        let media_field = if m_lower.contains("video") {
-            "video"
-        } else if m_lower.contains("photo") {
-            "photo"
-        } else if m_lower.contains("audio") {
-            "audio"
-        } else if m_lower.contains("voice") {
-            "voice"
-        } else if m_lower.contains("animation") {
-            "animation"
-        } else {
-            "document"
+        let media_field = match media_attrs_for(method, None).kind {
+            MediaKind::Video => "video",
+            MediaKind::VideoNote => "video_note",
+            MediaKind::Animation => "animation",
+            MediaKind::Audio => "audio",
+            MediaKind::Voice => "voice",
+            MediaKind::Document => {
+                if method.to_ascii_lowercase().contains("photo") { "photo" } else { "document" }
+            }
         };
 
         let mut msg_obj = serde_json::json!({
@@ -667,7 +665,6 @@ impl TelegramEngine {
 
     /// getMe straight from upstream (validates the token), refreshing the storage cache
     pub async fn get_me_fresh(&self, token: &str) -> TelegramResult<User> {
-        self.record_active_bot(token);
 
         let url = format!("{}/bot{token}/getMe", self.upstream_base_url);
         let resp: ApiResponse<User> = self
@@ -693,6 +690,7 @@ impl TelegramEngine {
             }
         };
 
+        self.record_active_bot(token);
         self.storage.save_bot(token, &user).await;
         Ok(user)
     }
@@ -1364,7 +1362,11 @@ impl TelegramEngine {
             let code = resp.status().as_u16();
             return Err(TelegramError::ApiError {
                 code,
-                description: format!("File download failed: status {}", resp.status()),
+                description: TelegramError::from_http_status(
+                    code,
+                    &format!("File download failed: status {}", resp.status()),
+                )
+                .to_string(),
                 parameters: None,
             });
         }
@@ -1454,7 +1456,7 @@ impl TelegramEngine {
         }
 
         if method_lower == "close" {
-            self.stop_webhook_worker(token);
+            // C++ re-creates the client on the next request; webhook delivery must keep running.
             crate::mtproto::uploader::invalidate_bot_auth(token);
             return Ok(Bytes::from_static(
                 br#"{"ok":true,"result":true,"description":"Bot instance closed"}"#,
@@ -1856,6 +1858,35 @@ impl TelegramEngine {
     }
 }
 
+/// Maps a send* method to its upload media kind and reads duration/width/height from request fields.
+pub fn media_attrs_for(
+    method: &str,
+    fields: Option<&serde_json::Map<String, Value>>,
+) -> MediaAttrs {
+    let kind = match method.to_ascii_lowercase().as_str() {
+        "sendvideo" => MediaKind::Video,
+        "sendvideonote" => MediaKind::VideoNote,
+        "sendanimation" => MediaKind::Animation,
+        "sendaudio" => MediaKind::Audio,
+        "sendvoice" => MediaKind::Voice,
+        _ => MediaKind::Document,
+    };
+    let num = |k: &str| -> i32 {
+        fields
+            .and_then(|m| m.get(k))
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .and_then(|n| i32::try_from(n).ok())
+            .unwrap_or(0)
+    };
+    let (width, height) = if kind == MediaKind::VideoNote {
+        let l = num("length");
+        (l, l)
+    } else {
+        (num("width"), num("height"))
+    };
+    MediaAttrs { kind, duration: num("duration"), width, height }
+}
+
 /// Pure token validation matching C++ ClientManager::send: structural problems and out-of-range ids -> 401,
 /// ids rejected by `--filter <remainder>/<modulo>` -> 421.
 pub fn validate_token(token: &str, filter: Option<(u64, u64)>) -> Result<(), TelegramError> {
@@ -1867,11 +1898,12 @@ pub fn validate_token(token: &str, filter: Option<(u64, u64)>) -> Result<(), Tel
         return Err(invalid());
     };
     let forbidden = || TelegramError::MisdirectedRequest("forbidden token specified".to_string());
-    let Ok(id) = id_str.parse::<i64>() else {
+    let parsed = if id_str.starts_with('+') { None } else { id_str.parse::<i64>().ok() };
+    let Some(id) = parsed else {
         return Err(forbidden());
     };
     if let Some((rem, modulo)) = filter {
-        if modulo != 0 && (id.unsigned_abs() % modulo) != rem {
+        if modulo != 0 && (id as u64 % modulo) != rem {
             return Err(forbidden());
         }
     }
@@ -1888,6 +1920,7 @@ mod token_tests {
     #[test]
     fn token_validation() {
         assert!(validate_token("123:abc", None).is_ok());
+        assert!(matches!(validate_token("+123:abc", None), Err(TelegramError::MisdirectedRequest(_))));
         assert!(matches!(validate_token("abc", None), Err(TelegramError::Unauthorized(_))));
         assert!(matches!(validate_token("0123:abc", None), Err(TelegramError::Unauthorized(_))));
         assert!(matches!(validate_token("a/b:c", None), Err(TelegramError::Unauthorized(_))));
@@ -1960,5 +1993,21 @@ mod local_tests {
         assert!(confine_path(&root, &root.join("../secret")).is_none());
         assert!(confine_path(&root, &base.join("secret")).is_none());
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod media_attr_tests {
+    use super::*;
+
+    #[test]
+    fn attrs_from_fields() {
+        let m: serde_json::Map<String, Value> =
+            serde_json::from_str(r#"{"duration":"7","width":640,"height":480}"#).unwrap();
+        let a = media_attrs_for("sendVideo", Some(&m));
+        assert_eq!((a.kind, a.duration, a.width, a.height), (MediaKind::Video, 7, 640, 480));
+        assert_eq!(media_attrs_for("sendDocument", Some(&m)).kind, MediaKind::Document);
+        assert_eq!(media_attrs_for("sendVoice", None).kind, MediaKind::Voice);
+        assert_eq!(media_attrs_for("sendVideoNote", None).kind, MediaKind::VideoNote);
     }
 }

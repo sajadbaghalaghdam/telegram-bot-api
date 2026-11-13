@@ -67,9 +67,7 @@ impl ClientManager {
                 self.sessions.remove(&k);
             }
             if self.sessions.len() >= MAX_ACTIVE_SESSIONS {
-                if let Some(k) = self.sessions.iter().next().map(|e| e.key().clone()) {
-                    self.sessions.remove(&k);
-                }
+                evict_one(&self.sessions);
             }
         }
         self.sessions.insert(token.to_string(), Arc::clone(&session));
@@ -85,5 +83,36 @@ impl ClientManager {
     #[inline]
     pub fn active_count(&self) -> usize {
         self.sessions.len()
+    }
+}
+
+/// Removes an arbitrary entry. The key is bound first so the iterator's shard guard is
+/// dropped before `remove()` (holding both deadlocks).
+fn evict_one<V>(map: &DashMap<String, V>) {
+    let victim = map.iter().next().map(|e| e.key().clone());
+    if let Some(k) = victim {
+        map.remove(&k);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn evict_one_does_not_deadlock() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let map: DashMap<String, u32> = DashMap::new();
+            for i in 0..(MAX_ACTIVE_SESSIONS + 10) {
+                map.insert(i.to_string(), 0);
+                if map.len() >= MAX_ACTIVE_SESSIONS {
+                    evict_one(&map);
+                }
+            }
+            let _ = tx.send(map.len());
+        });
+        let len = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("evict hung");
+        assert_eq!(len, MAX_ACTIVE_SESSIONS - 1);
     }
 }

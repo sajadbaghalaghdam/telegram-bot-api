@@ -63,7 +63,6 @@ async fn telemetry_middleware(
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_check))
-        .route("/stats", get(handlers::get_stats))
 
         // Fast-path cached session lifecycle routes
         .route("/{token}/getMe", get(handlers::get_me).post(handlers::get_me))
@@ -82,12 +81,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/file/bot/{token}/{*file_path}", get(handlers::serve_file))
 
         // Test DC environment routes (matching official HttpServer.h /test/ routes)
-        .route("/test/{token}/getMe", get(handlers::get_me).post(handlers::get_me))
-        .route("/test/{token}/close", post(handlers::close).get(handlers::close))
-        .route("/test/{token}/logOut", post(handlers::log_out).get(handlers::log_out))
-        .route("/test/bot/{token}/getMe", get(handlers::get_me).post(handlers::get_me))
-        .route("/test/bot/{token}/close", post(handlers::close).get(handlers::close))
-        .route("/test/bot/{token}/logOut", post(handlers::log_out).get(handlers::log_out))
         .route("/test/{token}/{method}", post(handlers::generic_post_test_handler).get(handlers::generic_get_test_handler))
         .route("/test/bot/{token}/{method}", post(handlers::generic_post_test_handler).get(handlers::generic_get_test_handler))
         .route("/test/file/{token}/{*file_path}", get(handlers::serve_test_file))

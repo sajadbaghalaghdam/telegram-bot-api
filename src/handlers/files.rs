@@ -217,6 +217,7 @@ pub async fn serve_test_file(
     State(state): State<AppState>,
 ) -> TelegramResult<Response> {
     let clean_token = token.strip_prefix("bot").unwrap_or(&token);
+    state.engine.check_token_filter(clean_token)?;
     let dl_url = format!("https://api.telegram.org/test/file/bot{clean_token}/{file_path}");
     let resp = state
         .engine
@@ -227,10 +228,10 @@ pub async fn serve_test_file(
         .map_err(|e| crate::error::TelegramError::Internal(format!("File download network error: {e}")))?;
 
     if !resp.status().is_success() {
-        return Err(crate::error::TelegramError::BadRequest(format!(
-            "File download failed: status {}",
-            resp.status()
-        )));
+        return Err(crate::error::TelegramError::from_http_status(
+            resp.status().as_u16(),
+            &format!("File download failed: status {}", resp.status()),
+        ));
     }
 
     let mut resp_headers = HeaderMap::new();

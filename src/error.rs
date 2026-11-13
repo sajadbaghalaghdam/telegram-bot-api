@@ -70,6 +70,32 @@ impl TelegramError {
         }
     }
 
+    /// Builds an error whose status and description prefix match an upstream HTTP status.
+    pub fn from_http_status(status: u16, msg: &str) -> Self {
+        match status {
+            400 => Self::BadRequest(msg.to_string()),
+            401 => Self::Unauthorized(msg.to_string()),
+            404 => Self::NotFound(msg.to_string()),
+            409 => Self::Conflict(msg.to_string()),
+            403 => Self::ApiError {
+                code: 403,
+                description: format_error_prefix("Forbidden", msg),
+                parameters: None,
+            },
+            429 => Self::ApiError {
+                code: 429,
+                description: format_error_prefix("Too Many Requests", msg),
+                parameters: None,
+            },
+            500..=599 => Self::ApiError {
+                code: status,
+                description: format_error_prefix("Internal Server Error", msg),
+                parameters: None,
+            },
+            _ => Self::BadRequest(msg.to_string()),
+        }
+    }
+
     /// Maps the internal error variant to the corresponding HTTP status code.
     fn status_code(&self) -> StatusCode {
         match self {
@@ -163,5 +189,15 @@ mod tests {
         let err3 = TelegramError::MisdirectedRequest("forbidden token specified".to_string());
         let resp3 = err3.into_response();
         assert_eq!(resp3.status(), StatusCode::MISDIRECTED_REQUEST);
+    }
+
+    #[test]
+    fn test_from_http_status_prefix() {
+        let e = TelegramError::from_http_status(404, "file");
+        assert_eq!(e.to_string(), "Not Found: file");
+        let e = TelegramError::from_http_status(502, "file");
+        assert_eq!(e.to_string(), "Internal Server Error: file");
+        let e = TelegramError::from_http_status(403, "file");
+        assert_eq!(e.to_string(), "Forbidden: file");
     }
 }

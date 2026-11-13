@@ -20,9 +20,9 @@ pub async fn generic_post_handler(
     req: Request,
 ) -> TelegramResult<Response> {
     let clean_token = token.strip_prefix("bot").unwrap_or(&token);
+    state.engine.check_token_filter(clean_token)?;
 
     if method.eq_ignore_ascii_case("getme") {
-        state.engine.check_token_filter(clean_token)?;
         let session = state.client_manager.get_or_create(clean_token).await?;
         return Ok((
             StatusCode::OK,
@@ -165,6 +165,12 @@ pub async fn generic_post_handler(
         (StatusCode::OK, None)
     };
 
+    if status == StatusCode::OK
+        && (method.eq_ignore_ascii_case("close") || method.eq_ignore_ascii_case("logout"))
+    {
+        state.client_manager.close(clean_token);
+    }
+
     let mut resp = (
         status,
         [(header::CONTENT_TYPE, "application/json")],
@@ -208,6 +214,7 @@ pub async fn generic_post_test_handler(
     req: Request,
 ) -> TelegramResult<Response> {
     let clean_token = token.strip_prefix("bot").unwrap_or(&token);
+    state.engine.check_token_filter(clean_token)?;
     let ct = req
         .headers()
         .get(header::CONTENT_TYPE)
