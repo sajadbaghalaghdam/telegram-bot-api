@@ -152,6 +152,42 @@ impl TelegramEngine {
         }
     }
 
+    /// Drops a bot from the seen-bots map (called when upstream answers 401 for its token).
+    pub fn forget_active_bot(&self, token: &str) {
+        let bot_id = token.split(':').next().unwrap_or(token);
+        self.active_bots.remove(bot_id);
+    }
+
+    /// Updates the seen-bots map from an upstream reply: record on ok:true, forget on error_code 401.
+    /// Only tokens upstream accepted are counted, so fake tokens cannot inflate `bot_count`.
+    fn note_upstream_reply(&self, token: &str, reply: &Result<Bytes, TelegramError>) {
+        match reply {
+            Ok(bytes) => {
+                #[derive(serde::Deserialize)]
+                struct Head {
+                    ok: Option<bool>,
+                    error_code: Option<i64>,
+                }
+                // Skip the parse for already-known bots unless the reply is small enough to be a 401.
+                let bot_id = token.split(':').next().unwrap_or(token);
+                if self.active_bots.contains_key(bot_id) && bytes.len() > 4096 {
+                    return;
+                }
+                if let Ok(h) = serde_json::from_slice::<Head>(bytes) {
+                    if h.ok == Some(true) {
+                        self.record_active_bot(token);
+                    } else if h.error_code == Some(401) {
+                        self.forget_active_bot(token);
+                    }
+                }
+            }
+            Err(TelegramError::Unauthorized(_)) | Err(TelegramError::ApiError { code: 401, .. }) => {
+                self.forget_active_bot(token)
+            }
+            Err(_) => {}
+        }
+    }
+
     #[inline]
     pub fn active_bots_count(&self) -> usize {
         self.active_bots
@@ -513,8 +549,8 @@ impl TelegramEngine {
 
     /// Execute getMe (checks SQLite WAL + L1 DashMap cache first)
     pub async fn get_me(&self, token: &str) -> TelegramResult<User> {
-        self.record_active_bot(token);
         if let Some(cached_user) = self.storage.get_bot(token).await {
+            self.record_active_bot(token);
             return Ok((*cached_user).clone());
         }
         self.get_me_fresh(token).await
@@ -537,6 +573,9 @@ impl TelegramEngine {
         let user = match (resp.ok, resp.result) {
             (true, Some(user)) => user,
             _ => {
+                if resp.error_code.unwrap_or(401) == 401 {
+                    self.forget_active_bot(token);
+                }
                 return Err(TelegramError::ApiError {
                     code: resp.error_code.unwrap_or(401),
                     description: resp
@@ -1258,7 +1297,22 @@ impl TelegramEngine {
         body_bytes: Bytes,
     ) -> TelegramResult<Bytes> {
         self.check_token_filter(token)?;
-        self.record_active_bot(token);
+        let reply = self
+            .universal_call_inner(token, method, query_map, query_str, content_type, body_bytes)
+            .await;
+        self.note_upstream_reply(token, &reply);
+        reply
+    }
+
+    async fn universal_call_inner(
+        self: &Arc<Self>,
+        token: &str,
+        method: &str,
+        query_map: &std::collections::HashMap<String, String>,
+        query_str: Option<&str>,
+        content_type: Option<&str>,
+        body_bytes: Bytes,
+    ) -> TelegramResult<Bytes> {
         let method_lower = method.to_ascii_lowercase();
 
         if method_lower == "getupdates" && self.webhook_workers.contains_key(token) {
@@ -1880,5 +1934,71 @@ mod media_attr_tests {
         assert_eq!(media_attrs_for("sendDocument", Some(&m)).kind, MediaKind::Document);
         assert_eq!(media_attrs_for("sendVoice", None).kind, MediaKind::Voice);
         assert_eq!(media_attrs_for("sendVideoNote", None).kind, MediaKind::VideoNote);
+    }
+}
+
+#[cfg(test)]
+mod active_bot_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Mock upstream: ok for token "1:good", otherwise a 401 JSON error.
+    async fn mock_upstream() -> u16 {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (mut s, _) = l.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let body = if head.contains("/bot1:good/") {
+                        r#"{"ok":true,"result":true}"#
+                    } else {
+                        r#"{"ok":false,"error_code":401,"description":"Unauthorized"}"#
+                    };
+                    let r = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = s.write_all(r.as_bytes()).await;
+                    let _ = s.shutdown().await;
+                });
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn only_upstream_accepted_tokens_are_counted() {
+        let port = mock_upstream().await;
+        let dir = std::env::temp_dir().join(format!("activebot_{}", std::process::id()));
+        let storage = crate::storage::StorageEngine::new(&dir).unwrap();
+        let mut e = TelegramEngine::new(false, dir.clone(), dir.clone(), storage);
+        e.upstream_base_url = format!("http://127.0.0.1:{port}");
+        let e = Arc::new(e);
+        let none = std::collections::HashMap::new();
+
+        for i in 2..12 {
+            let tok = format!("{i}:fake");
+            let r = e.universal_call(&tok, "getChat", &none, None, None, Bytes::new()).await.unwrap();
+            assert!(String::from_utf8_lossy(&r).contains("401"));
+        }
+        assert_eq!(e.active_bots.len(), 0, "fake tokens must not be recorded");
+
+        e.universal_call("1:good", "getChat", &none, None, None, Bytes::new()).await.unwrap();
+        assert_eq!(e.active_bots.len(), 1);
+
+        // A later 401 for a recorded token removes it again.
+        e.record_active_bot("7:revoked");
+        assert_eq!(e.active_bots.len(), 2);
+        e.universal_call("7:revoked", "getChat", &none, None, None, Bytes::new()).await.unwrap();
+        assert_eq!(e.active_bots.len(), 1);
+
+        // get_me with a bad token errors and is not counted.
+        assert!(e.get_me("9:bad").await.is_err());
+        assert_eq!(e.active_bots.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
