@@ -33,35 +33,20 @@ pub struct UploadedMediaResult {
     pub dc_id: i32,
 }
 
-/// Uploads a local file (up to 2000 MB) and sends it to the target peer over MTProto 2.0
-/// using parallel worker connections sharing the bot's authorized `auth_key` (matching TDLib's SessionMultiProxy)
-/// and `upload.saveBigFilePart#de7b673d` + `messages.sendMedia#330e77f`.
-#[allow(clippy::too_many_arguments)]
-pub async fn upload_and_send_large_file(
-    api_id: i32,
-    api_hash: &str,
-    bot_token: &str,
-    chat_id_str: &str,
-    hint_username: Option<&str>,
-    file_path: &Path,
-    caption: &str,
-    custom_file_name: Option<&str>,
-) -> Result<UploadedMediaResult, Error> {
-    upload_and_send_large_file_typed(
-        api_id,
-        api_hash,
-        bot_token,
-        chat_id_str,
-        hint_username,
-        file_path,
-        caption,
-        custom_file_name,
-        MediaAttrs::default(),
-    )
-    .await
+/// Everything needed to upload one local file and send it as a document.
+pub struct UploadRequest<'a> {
+    pub api_id: i32,
+    pub api_hash: &'a str,
+    pub bot_token: &'a str,
+    pub chat_id: &'a str,
+    pub hint_username: Option<&'a str>,
+    pub file_path: &'a Path,
+    pub caption: &'a str,
+    pub custom_file_name: Option<&'a str>,
+    pub media_attrs: MediaAttrs,
 }
 
-/// Same as [`upload_and_send_large_file`] but preserves the media type (video/audio/voice/...).
+/// Positional-argument form of [`upload_file`], kept source-compatible for `src/client`.
 #[allow(clippy::too_many_arguments)]
 pub async fn upload_and_send_large_file_typed(
     api_id: i32,
@@ -74,6 +59,36 @@ pub async fn upload_and_send_large_file_typed(
     custom_file_name: Option<&str>,
     media_attrs: MediaAttrs,
 ) -> Result<UploadedMediaResult, Error> {
+    upload_file(&UploadRequest {
+        api_id,
+        api_hash,
+        bot_token,
+        chat_id: chat_id_str,
+        hint_username,
+        file_path,
+        caption,
+        custom_file_name,
+        media_attrs,
+    })
+    .await
+}
+
+/// Uploads a local file (up to 2000 MB) and sends it to the target peer over MTProto 2.0
+/// using parallel worker connections sharing the bot's authorized `auth_key` (matching TDLib's SessionMultiProxy)
+/// and `upload.saveBigFilePart#de7b673d` + `messages.sendMedia#330e77f`, preserving the media
+/// type (video/audio/voice/...) through `media_attrs`.
+pub async fn upload_file(req: &UploadRequest<'_>) -> Result<UploadedMediaResult, Error> {
+    let UploadRequest {
+        api_id,
+        api_hash,
+        bot_token,
+        chat_id: chat_id_str,
+        hint_username,
+        file_path,
+        caption,
+        custom_file_name,
+        media_attrs,
+    } = *req;
     let metadata = tokio::fs::metadata(file_path).await?;
     let file_size = metadata.len() as usize;
     if file_size == 0 {

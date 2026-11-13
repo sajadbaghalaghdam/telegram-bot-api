@@ -31,6 +31,8 @@ const SINGLE_RPC_MAX_FLOOD_WAIT_SECS: u64 = 3;
 pub const BATCH_MAX_FLOOD_WAIT_SECS: u64 = 60;
 /// Upper bound for the size of a decompressed `gzip_packed` payload.
 const MAX_GUNZIP_OUTPUT: usize = 16 * 1024 * 1024;
+/// Packets in a row that do not answer any in-flight request before the call fails.
+const MAX_UNRELATED_PACKETS: u32 = 256;
 /// Nesting limit for `msg_container` / `gzip_packed`.
 const MAX_DISPATCH_DEPTH: u32 = 8;
 
@@ -267,12 +269,7 @@ impl MtProtoConnection {
         }
     }
 
-    /// See [`super::rpc_error::parse_migrate_dc`].
-    pub fn parse_migrate_dc(err_msg: &str) -> Option<i32> {
-        super::rpc_error::parse_migrate_dc(err_msg)
-    }
-
-    /// See [`super::rpc_error::parse_flood_wait`].
+    /// Seconds of a `FLOOD_WAIT_x` error text (kept here for `src/client`; see [`parse_flood_wait`]).
     pub fn parse_flood_wait(err_msg: &str) -> Option<u64> {
         parse_flood_wait(err_msg)
     }
@@ -338,7 +335,7 @@ impl MtProtoConnection {
         };
 
         let mut req_msg_id = self.send_encrypted(effective, true).await?;
-        let (mut resends, mut flood_retries) = (0u32, 0u32);
+        let (mut resends, mut flood_retries, mut unrelated) = (0u32, 0u32, 0u32);
 
         loop {
             self.flush_acks().await?;
@@ -352,6 +349,10 @@ impl MtProtoConnection {
             }
 
             let Some(pos) = self.replies.iter().position(|(id, _)| *id == req_msg_id) else {
+                unrelated += 1;
+                if unrelated > MAX_UNRELATED_PACKETS {
+                    return Err(Error::new(ErrorKind::InvalidData, "too many packets that do not answer the request"));
+                }
                 continue;
             };
             let (_, reply) = self.replies.swap_remove(pos);
@@ -410,7 +411,7 @@ impl MtProtoConnection {
 
         let mut done = vec![false; queries.len()];
         let mut remaining = queries.len();
-        let (mut resends, mut flood_retries) = (0u32, 0u32);
+        let (mut resends, mut flood_retries, mut unrelated) = (0u32, 0u32, 0u32);
 
         while remaining > 0 {
             self.flush_acks().await?;
@@ -427,6 +428,7 @@ impl MtProtoConnection {
                 continue;
             }
 
+            let remaining_before = remaining;
             let mut replies = std::mem::take(&mut self.replies);
             for (id, reply) in replies.drain(..) {
                 let Some(pos) = expected_ids.iter().position(|&e| e == id) else {
@@ -458,6 +460,12 @@ impl MtProtoConnection {
                 remaining -= 1;
             }
             self.replies = replies;
+            if remaining == remaining_before {
+                unrelated += 1;
+                if unrelated > MAX_UNRELATED_PACKETS {
+                    return Err(Error::new(ErrorKind::InvalidData, "too many packets that do not answer the batch"));
+                }
+            }
         }
 
         self.flush_acks().await?;
@@ -537,7 +545,7 @@ mod tests {
     use super::*;
 
     fn inbound_parts() -> (MtProtoSession, Vec<i64>, Vec<(i64, Reply)>) {
-        (MtProtoSession::new([1u8; 256], 5), Vec::new(), Vec::new())
+        (MtProtoSession::with_time_offset([1u8; 256], 5, 0), Vec::new(), Vec::new())
     }
 
     fn rpc_result(req_id: i64, result: &[u8]) -> Vec<u8> {

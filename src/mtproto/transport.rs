@@ -105,10 +105,6 @@ impl IntermediateTransport {
         }
         Ok(len)
     }
-
-    pub async fn flush(&mut self) -> Result<(), Error> {
-        with_timeout("flush", self.stream.flush()).await
-    }
 }
 
 #[cfg(test)]
