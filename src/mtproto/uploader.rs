@@ -535,13 +535,13 @@ impl MtProtoConnection {
                 let count = read_int(&mut cursor).map_err(Self::tl_err)?;
                 for _ in 0..count {
                     if cursor.len() < 16 {
-                        break;
+                        return Err(Error::new(ErrorKind::InvalidData, "Truncated msg_container"));
                     }
                     let inner_msg_id = read_long(&mut cursor).map_err(Self::tl_err)?;
                     let inner_seqno = read_int(&mut cursor).map_err(Self::tl_err)?;
                     let inner_bytes = read_int(&mut cursor).map_err(Self::tl_err)? as usize;
                     if cursor.len() < inner_bytes {
-                        break;
+                        return Err(Error::new(ErrorKind::InvalidData, "msg_container inner message truncated"));
                     }
                     let inner_body = &cursor[..inner_bytes];
                     cursor = &cursor[inner_bytes..];
@@ -572,7 +572,20 @@ impl MtProtoConnection {
                     } else if inner_ctor == 0x3072cfa1 {
                         // gzip_packed#3072cfa1 packed_data:string
                         let gz_bytes = read_bytes(&mut inner_cursor).map_err(Self::tl_err)?;
-                        let unpacked = gunzip_pure_rust(gz_bytes).unwrap_or_else(|_| gz_bytes.to_vec());
+                        let unpacked = match gunzip_pure_rust(gz_bytes) {
+                            Ok(u) => u,
+                            Err(e) => {
+                                tracing::error!("[mtproto] gzip_packed rpc_result decompression failed: {}", e);
+                                results.push((
+                                    req_msg_id,
+                                    Err(Error::new(
+                                        ErrorKind::InvalidData,
+                                        format!("gzip_packed decompression failed: {}", e),
+                                    )),
+                                ));
+                                return Ok(());
+                            }
+                        };
                         if unpacked.len() >= 4 {
                             let mut u_cur = unpacked.as_slice();
                             let u_ctor = read_int(&mut u_cur).unwrap_or(0) as u32;
@@ -629,9 +642,11 @@ impl MtProtoConnection {
             // gzip_packed#3072cfa1
             0x3072cfa1 => {
                 let gz_bytes = read_bytes(&mut cursor).map_err(Self::tl_err)?;
-                if let Ok(unpacked) = gunzip_pure_rust(gz_bytes) {
-                    self.process_incoming_payload(&unpacked, srv_msg_id, results, retry_needed)?;
-                }
+                let unpacked = gunzip_pure_rust(gz_bytes).map_err(|e| {
+                    tracing::error!("[mtproto] gzip_packed decompression failed: {}", e);
+                    Error::new(ErrorKind::InvalidData, format!("gzip_packed decompression failed: {}", e))
+                })?;
+                self.process_incoming_payload(&unpacked, srv_msg_id, results, retry_needed)?;
             }
             // pong#347773c5 msg_id:long ping_id:long
             0x347773c5 => {
@@ -682,12 +697,12 @@ pub async fn resolve_input_peer(
         write_long(&mut req, chat_id);
         write_long(&mut req, 0);
 
-        let mut access_hash = 0i64;
-        if let Ok(resp) = conn.rpc_call(&req).await {
-            if let Some(ah) = extract_user_access_hash(&resp, chat_id) {
-                access_hash = ah;
-            }
-        }
+        let resp = conn.rpc_call(&req).await.map_err(|e| {
+            Error::new(ErrorKind::NotFound, format!("Failed to resolve user {}: {}", chat_id, e))
+        })?;
+        let access_hash = extract_user_access_hash(&resp, chat_id).ok_or_else(|| {
+            Error::new(ErrorKind::NotFound, format!("access_hash for user {} not found", chat_id))
+        })?;
 
         let mut peer = BytesMut::with_capacity(20);
         write_int(&mut peer, 0xdde8a54cu32 as i32); // inputPeerUser#dde8a54c
@@ -704,12 +719,12 @@ pub async fn resolve_input_peer(
         write_long(&mut req, channel_id);
         write_long(&mut req, 0);
 
-        let mut access_hash = 0i64;
-        if let Ok(resp) = conn.rpc_call(&req).await {
-            if let Some(ah) = extract_channel_access_hash(&resp, channel_id) {
-                access_hash = ah;
-            }
-        }
+        let resp = conn.rpc_call(&req).await.map_err(|e| {
+            Error::new(ErrorKind::NotFound, format!("Failed to resolve channel {}: {}", channel_id, e))
+        })?;
+        let access_hash = extract_channel_access_hash(&resp, channel_id).ok_or_else(|| {
+            Error::new(ErrorKind::NotFound, format!("access_hash for channel {} not found", channel_id))
+        })?;
 
         let mut peer = BytesMut::with_capacity(20);
         write_int(&mut peer, 0x27bcbbfcu32 as i32); // inputPeerChannel#27bcbbfc
@@ -745,7 +760,8 @@ async fn resolve_username_mtproto(
 
     match peer_ctor {
         0x59511722 => {
-            let ah = extract_user_access_hash(&resp, peer_id).unwrap_or(0);
+            let ah = extract_user_access_hash(&resp, peer_id)
+                .ok_or_else(|| Error::new(ErrorKind::NotFound, "access_hash for resolved user not found"))?;
             let mut peer = BytesMut::with_capacity(20);
             write_int(&mut peer, 0xdde8a54cu32 as i32);
             write_long(&mut peer, peer_id);
@@ -753,7 +769,8 @@ async fn resolve_username_mtproto(
             Ok(peer)
         }
         0xa2a5371e => {
-            let ah = extract_channel_access_hash(&resp, peer_id).unwrap_or(0);
+            let ah = extract_channel_access_hash(&resp, peer_id)
+                .ok_or_else(|| Error::new(ErrorKind::NotFound, "access_hash for resolved channel not found"))?;
             let mut peer = BytesMut::with_capacity(20);
             write_int(&mut peer, 0x27bcbbfcu32 as i32);
             write_long(&mut peer, peer_id);
@@ -802,6 +819,70 @@ fn extract_channel_access_hash(buf: &[u8], target_channel_id: i64) -> Option<i64
     None
 }
 
+/// Media type used for `inputMediaUploadedDocument` attributes so large uploads keep their
+/// original type (video/audio/voice/animation) instead of always becoming a plain document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaKind {
+    #[default]
+    Document,
+    Video,
+    VideoNote,
+    Animation,
+    Audio,
+    Voice,
+}
+
+/// Optional media attributes (0 when unknown).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MediaAttrs {
+    pub kind: MediaKind,
+    pub duration: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// Maximum upload size: 4000 parts of 512 KiB (2000 MiB), as in TDLib.
+const MAX_UPLOAD_PARTS: usize = 4000;
+
+/// Writes the `attributes` vector (filename plus kind-specific attribute) and returns the
+/// document flags to use.
+fn write_document_attributes(buf: &mut BytesMut, file_name: &str, attrs: &MediaAttrs) {
+    let mut count = 1;
+    let extra = attrs.kind != MediaKind::Document;
+    if extra {
+        count += 1;
+    }
+    if attrs.kind == MediaKind::Animation {
+        count += 1;
+    }
+    write_int(buf, 0x1cb5c415u32 as i32);
+    write_int(buf, count);
+    match attrs.kind {
+        MediaKind::Video | MediaKind::VideoNote | MediaKind::Animation => {
+            // documentAttributeVideo#43c57c48 flags:# round_message:flags.0?true supports_streaming:flags.1?true
+            //   duration:double w:int h:int
+            if attrs.kind == MediaKind::Animation {
+                write_int(buf, 0x11b58939u32 as i32); // documentAttributeAnimated#11b58939
+            }
+            let flags = if attrs.kind == MediaKind::VideoNote { 1 } else { 2 };
+            write_int(buf, 0x43c57c48u32 as i32);
+            write_int(buf, flags);
+            buf.put_f64_le(attrs.duration as f64);
+            write_int(buf, attrs.width);
+            write_int(buf, attrs.height);
+        }
+        MediaKind::Audio | MediaKind::Voice => {
+            // documentAttributeAudio#9852f9c6 flags:# voice:flags.10?true duration:int
+            write_int(buf, 0x9852f9c6u32 as i32);
+            write_int(buf, if attrs.kind == MediaKind::Voice { 1 << 10 } else { 0 });
+            write_int(buf, attrs.duration);
+        }
+        MediaKind::Document => {}
+    }
+    write_int(buf, 0x15590068u32 as i32); // documentAttributeFilename#15590068
+    write_string(buf, file_name);
+}
+
 /// Uploads a local file (up to 2000 MB) and sends it to the target peer over MTProto 2.0
 /// using parallel worker connections sharing the bot's authorized `auth_key` (matching TDLib's SessionMultiProxy)
 /// and `upload.saveBigFilePart#de7b673d` + `messages.sendMedia#330e77f`.
@@ -815,10 +896,39 @@ pub async fn upload_and_send_large_file(
     caption: &str,
     custom_file_name: Option<&str>,
 ) -> Result<UploadedMediaResult, Error> {
+    upload_and_send_large_file_typed(
+        api_id,
+        api_hash,
+        bot_token,
+        chat_id_str,
+        hint_username,
+        file_path,
+        caption,
+        custom_file_name,
+        MediaAttrs::default(),
+    )
+    .await
+}
+
+/// Same as [`upload_and_send_large_file`] but preserves the media type (video/audio/voice/...).
+pub async fn upload_and_send_large_file_typed(
+    api_id: i32,
+    api_hash: &str,
+    bot_token: &str,
+    chat_id_str: &str,
+    hint_username: Option<&str>,
+    file_path: &Path,
+    caption: &str,
+    custom_file_name: Option<&str>,
+    media_attrs: MediaAttrs,
+) -> Result<UploadedMediaResult, Error> {
     let metadata = tokio::fs::metadata(file_path).await?;
     let file_size = metadata.len() as usize;
     if file_size == 0 {
         return Err(Error::new(ErrorKind::InvalidInput, "Cannot upload an empty file"));
+    }
+    if (file_size + PART_SIZE - 1) / PART_SIZE > MAX_UPLOAD_PARTS {
+        return Err(Error::new(ErrorKind::InvalidInput, "File is too big (maximum 2000 MiB)"));
     }
 
     let file_name = custom_file_name
@@ -925,15 +1035,17 @@ pub async fn upload_and_send_large_file(
                     }
                 };
                 for resp in responses {
-                    if resp.len() >= 4 {
-                        let bool_ctor = u32::from_le_bytes(resp[0..4].try_into().unwrap());
-                        // boolTrue#997275b5
-                        if bool_ctor != 0x997275b5 {
-                            return Err(Error::new(
-                                ErrorKind::Other,
-                                format!("upload.saveBigFilePart returned false (0x{:08x})", bool_ctor),
-                            ));
-                        }
+                    // boolTrue#997275b5
+                    let bool_ctor = if resp.len() >= 4 {
+                        u32::from_le_bytes(resp[0..4].try_into().unwrap())
+                    } else {
+                        0
+                    };
+                    if bool_ctor != 0x997275b5 {
+                        return Err(Error::new(
+                            ErrorKind::Other,
+                            format!("upload part returned non-true result (0x{:08x})", bool_ctor),
+                        ));
                     }
                 }
             }
@@ -942,9 +1054,29 @@ pub async fn upload_and_send_large_file(
         }));
     }
 
-    for h in handles {
-        h.await
-            .map_err(|e| Error::new(ErrorKind::Other, format!("Upload worker panicked: {}", e)))??;
+    // Fail fast: on the first worker error, abort the remaining workers instead of letting
+    // them keep uploading parts of a doomed file.
+    let mut first_err: Option<Error> = None;
+    for (idx, h) in handles.iter_mut().enumerate() {
+        match h.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                first_err = Some(e);
+            }
+            Err(e) => {
+                first_err = Some(Error::new(ErrorKind::Other, format!("Upload worker panicked: {}", e)));
+            }
+        }
+        if first_err.is_some() {
+            tracing::error!("[upload] worker {} failed, aborting remaining workers", idx);
+            break;
+        }
+    }
+    if let Some(e) = first_err {
+        for h in &handles {
+            h.abort();
+        }
+        return Err(e);
     }
 
     // 4. Construct messages.sendMedia#330e77f with inputMediaUploadedDocument#37c9330
@@ -976,11 +1108,8 @@ pub async fn upload_and_send_large_file(
     }
     write_string(&mut send_req, &mime_type);
 
-    // attributes: Vector<DocumentAttribute> = [documentAttributeFilename#15590068]
-    write_int(&mut send_req, 0x1cb5c415u32 as i32); // vector#1cb5c415
-    write_int(&mut send_req, 1);
-    write_int(&mut send_req, 0x15590068u32 as i32); // documentAttributeFilename#15590068
-    write_string(&mut send_req, &file_name);
+    // attributes: Vector<DocumentAttribute>
+    write_document_attributes(&mut send_req, &file_name, &media_attrs);
 
     // message (caption) & random_id
     write_string(&mut send_req, caption);
@@ -1312,5 +1441,29 @@ mod tests {
         assert_eq!(read_int(&mut cur_import).unwrap(), 0xa57a7dad_u32 as i32);
         assert_eq!(read_long(&mut cur_import).unwrap(), 1234567890123456_i64);
         assert_eq!(read_bytes(&mut cur_import).unwrap(), sample_bytes);
+    }
+}
+
+#[cfg(test)]
+mod attr_tests {
+    use super::*;
+
+    #[test]
+    fn document_attributes_by_kind() {
+        let mut b = BytesMut::new();
+        write_document_attributes(&mut b, "a.mp4", &MediaAttrs::default());
+        assert_eq!(&b[4..8], &1i32.to_le_bytes());
+
+        let mut b = BytesMut::new();
+        let attrs = MediaAttrs { kind: MediaKind::Voice, duration: 5, ..Default::default() };
+        write_document_attributes(&mut b, "a.ogg", &attrs);
+        assert_eq!(&b[4..8], &2i32.to_le_bytes());
+        assert_eq!(&b[8..12], &0x9852f9c6u32.to_le_bytes());
+        assert_eq!(&b[12..16], &(1i32 << 10).to_le_bytes());
+
+        let mut b = BytesMut::new();
+        let attrs = MediaAttrs { kind: MediaKind::Animation, ..Default::default() };
+        write_document_attributes(&mut b, "a.gif", &attrs);
+        assert_eq!(&b[4..8], &3i32.to_le_bytes());
     }
 }
