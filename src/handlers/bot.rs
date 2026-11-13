@@ -7,12 +7,12 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use crate::client::relay::RelayCall;
 use crate::error::TelegramResult;
-use crate::server::AppState;
+use crate::server::SharedState;
 
 /// `getMe` fast path: validates the token (401/421) and serves a short-lived cached response.
 pub async fn get_me(
     Path(token): Path<String>,
-    State(state): State<AppState>,
+    State(state): State<SharedState>,
 ) -> TelegramResult<Response> {
     let clean_token = token.strip_prefix("bot").unwrap_or(&token);
     state.engine.check_token_filter(clean_token)?;
@@ -25,7 +25,7 @@ pub async fn get_me(
 }
 
 /// Delegates to the universal call path so close/logOut share validation, upstream relay and cleanup.
-async fn lifecycle_call(state: &AppState, token: &str, method: &str) -> TelegramResult<Response> {
+async fn lifecycle_call(state: &SharedState, token: &str, method: &str) -> TelegramResult<Response> {
     let clean_token = token.strip_prefix("bot").unwrap_or(token);
     let relayed = state
         .engine
@@ -53,14 +53,14 @@ async fn lifecycle_call(state: &AppState, token: &str, method: &str) -> Telegram
 
 pub async fn close(
     Path(token): Path<String>,
-    State(state): State<AppState>,
+    State(state): State<SharedState>,
 ) -> TelegramResult<Response> {
     lifecycle_call(&state, &token, "close").await
 }
 
 pub async fn log_out(
     Path(token): Path<String>,
-    State(state): State<AppState>,
+    State(state): State<SharedState>,
 ) -> TelegramResult<Response> {
     lifecycle_call(&state, &token, "logOut").await
 }

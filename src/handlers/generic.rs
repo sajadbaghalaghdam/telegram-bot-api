@@ -9,7 +9,7 @@ use tokio::io::AsyncWriteExt;
 use crate::client::relay::RelayCall;
 use crate::client::upload::LargeUpload;
 use crate::error::{TelegramError, TelegramResult};
-use crate::server::AppState;
+use crate::server::SharedState;
 
 /// The multipart field carrying the media of a send method (None: unknown method, the first file
 /// part is used).
@@ -50,7 +50,7 @@ fn relay_status_error(status: u16, body: &[u8]) -> Option<TelegramError> {
 /// Form-urlencoded, and Query params.
 pub async fn generic_post_handler(
     Path((token, method)): Path<(String, String)>,
-    State(state): State<AppState>,
+    State(state): State<SharedState>,
     Query(query_map): Query<HashMap<String, String>>,
     RawQuery(raw_query): RawQuery,
     req: Request,
@@ -227,7 +227,7 @@ pub async fn generic_post_handler(
 /// Handles any official Telegram Bot API GET method dynamically
 pub async fn generic_get_handler(
     Path((token, method)): Path<(String, String)>,
-    State(state): State<AppState>,
+    State(state): State<SharedState>,
     Query(query_map): Query<HashMap<String, String>>,
     RawQuery(raw_query): RawQuery,
     req: Request,
@@ -245,7 +245,7 @@ pub async fn generic_get_handler(
 /// Handles any official Telegram Bot API POST method for the Test DC environment (/test/bot<token>/<method>)
 pub async fn generic_post_test_handler(
     Path((token, method)): Path<(String, String)>,
-    State(state): State<AppState>,
+    State(state): State<SharedState>,
     Query(_query_map): Query<HashMap<String, String>>,
     RawQuery(raw_query): RawQuery,
     req: Request,
@@ -304,7 +304,7 @@ pub async fn generic_post_test_handler(
 /// Handles any official Telegram Bot API GET method for the Test DC environment
 pub async fn generic_get_test_handler(
     Path((token, method)): Path<(String, String)>,
-    State(state): State<AppState>,
+    State(state): State<SharedState>,
     Query(query_map): Query<HashMap<String, String>>,
     RawQuery(raw_query): RawQuery,
     req: Request,
@@ -403,13 +403,13 @@ mod tests {
         let mut engine = TelegramEngine::new(false, dir.clone(), dir.clone(), storage);
         engine.upstream_base_url = format!("http://127.0.0.1:{port}");
         let engine = Arc::new(engine);
-        let state = AppState {
+        let state = std::sync::Arc::new(crate::server::AppState {
             config: Arc::new(crate::config::ServerConfig::parse_from(["bot"])),
             engine: engine.clone(),
             client_manager: Arc::new(ClientManager::new(engine)),
             stats: Arc::new(crate::stats::ServerStats::new()),
             watchdog: crate::watchdog::Watchdog::new(60),
-        };
+        });
         let req = Request::builder().method("POST").body(axum::body::Body::from("x=1")).unwrap();
         let resp = generic_post_test_handler(
             Path(("bot123456:AAH-abcdefghijklmnopqrstuvwxyz012345".to_string(), "getMe".to_string())),

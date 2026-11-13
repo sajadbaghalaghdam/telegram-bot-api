@@ -7,13 +7,13 @@ use tokio::fs::File as TokioFile;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 use crate::error::{TelegramError, TelegramResult};
-use crate::server::AppState;
+use crate::server::SharedState;
 
 /// Serve file content with O(1) memory streaming and HTTP Range support (matching C++ HttpFileConnection)
 pub async fn serve_file(
     req_headers: HeaderMap,
     Path((token, file_path)): Path<(String, String)>,
-    State(state): State<AppState>,
+    State(state): State<SharedState>,
 ) -> TelegramResult<Response> {
     let clean_token = token.strip_prefix("bot").unwrap_or(&token);
     state.engine.check_token_filter(clean_token)?;
@@ -139,7 +139,7 @@ pub async fn serve_file(
 pub async fn serve_test_file(
     _req_headers: HeaderMap,
     Path((token, file_path)): Path<(String, String)>,
-    State(state): State<AppState>,
+    State(state): State<SharedState>,
 ) -> TelegramResult<Response> {
     let clean_token = token.strip_prefix("bot").unwrap_or(&token);
     state.engine.check_token_filter(clean_token)?;

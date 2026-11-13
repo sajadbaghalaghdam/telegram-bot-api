@@ -15,7 +15,6 @@ use crate::stats::ServerStats;
 use crate::watchdog::Watchdog;
 
 /// AppState holds the shared application state across all request handlers matching official ClientManager.h
-#[derive(Clone)]
 pub struct AppState {
     pub config: Arc<ServerConfig>,
     pub engine: Arc<TelegramEngine>,
@@ -24,9 +23,12 @@ pub struct AppState {
     pub watchdog: Arc<Watchdog>,
 }
 
-/// Zero-allocation telemetry & watchdog middleware
+/// The state as handlers see it: one `Arc`, so a request clones a single pointer instead of five.
+pub type SharedState = Arc<AppState>;
+
+/// Telemetry & watchdog middleware: atomics only, no allocation of its own.
 async fn telemetry_middleware(
-    State(state): State<AppState>,
+    State(state): State<SharedState>,
     req: Request,
     next: Next,
 ) -> Response {
@@ -61,6 +63,7 @@ async fn telemetry_middleware(
 
 /// Creates the Axum router with defined routes for the Telegram Bot API.
 pub fn create_router(state: AppState) -> Router {
+    let state: SharedState = Arc::new(state);
     Router::new()
         .route("/health", get(health_check))
 
