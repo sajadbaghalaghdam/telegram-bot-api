@@ -32,10 +32,13 @@ pub static TELEGRAM_RSA_KEYS: &[TelegramRsaKey] = &[
 ];
 
 /// Encrypt data with Telegram RSA key (m^e mod n)
-pub fn rsa_encrypt(data: &[u8], key: &TelegramRsaKey) -> Vec<u8> {
+pub fn rsa_encrypt(data: &[u8], key: &TelegramRsaKey) -> Result<Vec<u8>, String> {
     let n = BigUint::parse_bytes(key.n.as_bytes(), 16).expect("Valid hex string for RSA modulus");
     let e = BigUint::from(key.e);
     let m = BigUint::from_bytes_be(data);
+    if m >= n {
+        return Err("RSA input value must be smaller than the modulus".to_string());
+    }
 
     let c = m.modpow(&e, &n);
     let mut bytes = c.to_bytes_be();
@@ -46,7 +49,7 @@ pub fn rsa_encrypt(data: &[u8], key: &TelegramRsaKey) -> Vec<u8> {
         bytes = padded;
     }
 
-    bytes
+    Ok(bytes)
 }
 
 /// MTProto 2.0 RSA_PAD encryption (translated from td/mtproto/Handshake.cpp:135-158)
@@ -100,5 +103,19 @@ pub fn rsa_pad_encrypt(data: &[u8], key: &TelegramRsaKey) -> [u8; 256] {
             out[offset..].copy_from_slice(&y_bytes);
             return out;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rsa_encrypt_rejects_value_ge_modulus() {
+        let key = &TELEGRAM_RSA_KEYS[0];
+        let n = BigUint::parse_bytes(key.n.as_bytes(), 16).unwrap();
+        assert!(rsa_encrypt(&n.to_bytes_be(), key).is_err());
+        assert!(rsa_encrypt(&[0xff; 256], key).is_err());
+        assert_eq!(rsa_encrypt(&[1, 2, 3], key).unwrap().len(), 256);
     }
 }
