@@ -1823,7 +1823,8 @@ pub fn validate_token(token: &str, filter: Option<(u64, u64)>) -> Result<(), Tel
         return Err(invalid());
     };
     let forbidden = || TelegramError::MisdirectedRequest("forbidden token specified".to_string());
-    let parsed = if id_str.starts_with('+') { None } else { id_str.parse::<i64>().ok() };
+    // C++ to_integer_safe: the parsed value must print back as the same string ("+1", "-0", "-05" are rejected).
+    let parsed = id_str.parse::<i64>().ok().filter(|id| id.to_string() == id_str);
     let Some(id) = parsed else {
         return Err(forbidden());
     };
@@ -1850,6 +1851,11 @@ mod token_tests {
         assert!(matches!(validate_token("0123:abc", None), Err(TelegramError::Unauthorized(_))));
         assert!(matches!(validate_token("a/b:c", None), Err(TelegramError::Unauthorized(_))));
         assert!(matches!(validate_token("12x:abc", None), Err(TelegramError::MisdirectedRequest(_))));
+        for bad in ["-0:abc", "-05:abc", "-00:abc", "+0:a", ":abc", "99999999999999999999:abc"] {
+            assert!(matches!(validate_token(bad, None), Err(TelegramError::MisdirectedRequest(_))), "{bad}");
+        }
+        // Canonical negative ids parse fine and are then rejected as out of range (401).
+        assert!(matches!(validate_token("-5:abc", None), Err(TelegramError::Unauthorized(_))));
         assert!(matches!(validate_token("123:abc", Some((0, 2))), Err(TelegramError::MisdirectedRequest(_))));
         assert!(validate_token("124:abc", Some((0, 2))).is_ok());
         assert!(matches!(validate_token("18014398509481984:a", None), Err(TelegramError::Unauthorized(_))));
