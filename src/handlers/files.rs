@@ -1,247 +1,159 @@
 use axum::{
-    extract::{Path, State},
+    body::Body,
+    extract::{RawPathParams, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    Json,
 };
-use tokio::fs::File as TokioFile;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
+
 use crate::error::{TelegramError, TelegramResult};
-use crate::models::{
-    ApiResponse, File, GetFileRequest, Message, SendAnimationRequest, SendAudioRequest,
-    SendDocumentRequest, SendPhotoRequest, SendVideoRequest, SendVoiceRequest,
-};
-use crate::server::AppState;
+use crate::server::SharedState;
 
-pub async fn send_photo(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<SendPhotoRequest>,
-) -> TelegramResult<Json<ApiResponse<Message>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let msg = state.engine.send_photo(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(msg)))
+/// Streaming chunk size of file bodies.
+const CHUNK: usize = 64 * 1024;
+/// Non-local servers refuse to serve files above 20 MB (C++ Client.cpp:17042).
+const MAX_NON_LOCAL_SIZE: u64 = 20 * 1024 * 1024;
+
+/// What a `Range` request header asks for, relative to a file of known size.
+#[derive(Debug, PartialEq, Eq)]
+enum ByteRange {
+    /// No (usable) range: serve the whole file.
+    Full,
+    /// `start..=end`, both inside the file.
+    Partial { start: u64, end: u64 },
+    /// RFC 7233: 416 Range Not Satisfiable.
+    Unsatisfiable,
 }
 
-pub async fn send_document(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<SendDocumentRequest>,
-) -> TelegramResult<Json<ApiResponse<Message>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let msg = state.engine.send_document(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(msg)))
+fn parse_range(header: Option<&HeaderValue>, total: u64) -> ByteRange {
+    let Some(spec) = header
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("bytes="))
+    else {
+        return ByteRange::Full;
+    };
+    // Exactly one '-' (a multi-range spec is not supported and ignored).
+    let Some((first, second)) = spec.split_once('-').filter(|(_, b)| !b.contains('-')) else {
+        return ByteRange::Full;
+    };
+    let (first, second) = (first.trim(), second.trim());
+    let last = total.saturating_sub(1);
+
+    let (start, end) = if first.is_empty() {
+        // Suffix range: bytes=-500 (last 500 bytes)
+        (total.saturating_sub(second.parse().unwrap_or(0)), last)
+    } else if second.is_empty() {
+        // Open range: bytes=500- (from 500 to the end)
+        (first.parse().unwrap_or(0), last)
+    } else {
+        // Explicit range: bytes=start-end
+        (first.parse().unwrap_or(0), second.parse().unwrap_or(last).min(last))
+    };
+
+    if start > end || start >= total {
+        ByteRange::Unsatisfiable
+    } else {
+        ByteRange::Partial { start, end }
+    }
 }
 
-pub async fn send_audio(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<SendAudioRequest>,
-) -> TelegramResult<Json<ApiResponse<Message>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let msg = state.engine.send_audio(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(msg)))
+fn too_big() -> TelegramError {
+    TelegramError::BadRequest("Bad Request: file is too big".to_string())
 }
 
-pub async fn send_video(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<SendVideoRequest>,
-) -> TelegramResult<Json<ApiResponse<Message>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let msg = state.engine.send_video(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(msg)))
-}
-
-pub async fn send_voice(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<SendVoiceRequest>,
-) -> TelegramResult<Json<ApiResponse<Message>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let msg = state.engine.send_voice(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(msg)))
-}
-
-pub async fn send_animation(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<SendAnimationRequest>,
-) -> TelegramResult<Json<ApiResponse<Message>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let msg = state.engine.send_animation(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(msg)))
-}
-
-pub async fn get_file(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<GetFileRequest>,
-) -> TelegramResult<Json<ApiResponse<File>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let file = state.engine.get_file(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(file)))
+/// `(token without the bot prefix, file path)` from the route captures.
+fn token_and_file(params: &RawPathParams) -> (&str, &str) {
+    let (mut token, mut file_path) = ("", "");
+    for (name, value) in params {
+        match name {
+            "token" => token = value,
+            "file_path" => file_path = value,
+            _ => {}
+        }
+    }
+    (token.strip_prefix("bot").unwrap_or(token), file_path)
 }
 
 /// Serve file content with O(1) memory streaming and HTTP Range support (matching C++ HttpFileConnection)
 pub async fn serve_file(
     req_headers: HeaderMap,
-    Path((token, file_path)): Path<(String, String)>,
-    State(state): State<AppState>,
+    State(state): State<SharedState>,
+    params: RawPathParams,
 ) -> TelegramResult<Response> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    state.engine.check_token_filter(clean_token)?;
-    let content_type = mime_guess::from_path(&file_path)
-        .first_or_octet_stream()
-        .as_ref()
-        .to_string();
+    let (token, file_path) = token_and_file(&params);
+    state.engine.check_token_filter(token)?;
 
     let mut resp_headers = HeaderMap::new();
-    if let Ok(ct) = HeaderValue::from_str(&content_type) {
+    if let Ok(ct) = HeaderValue::from_str(mime_guess::from_path(file_path).first_or_octet_stream().as_ref()) {
         resp_headers.insert(header::CONTENT_TYPE, ct);
     }
     resp_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
 
-    // Enforce 20MB download limit in non-local mode matching C++ Client.cpp:17042
-    if !state.config.local_mode {
-        if let Some(local_path) = state.engine.resolve_file_on_disk(clean_token, &file_path) {
-            if let Ok(meta) = tokio::fs::metadata(&local_path).await {
-                if meta.len() > 20 * 1024 * 1024 {
-                    return Err(TelegramError::BadRequest("Bad Request: file is too big".to_string()));
+    // 1. A file on local disk (local mode only): served directly, with Range support.
+    if let Some((mut f, total)) = state.engine.open_local_file(token, file_path).await {
+        match parse_range(req_headers.get(header::RANGE), total) {
+            ByteRange::Unsatisfiable => {
+                let mut err_headers = HeaderMap::new();
+                err_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+                if let Ok(cr) = HeaderValue::from_str(&format!("bytes */{total}")) {
+                    err_headers.insert(header::CONTENT_RANGE, cr);
                 }
+                return Ok((StatusCode::RANGE_NOT_SATISFIABLE, err_headers, "").into_response());
             }
-        }
-    }
-
-    // 1. If file is on local disk in local mode, handle Range requests directly
-    if let Some(local_path) = state.engine.resolve_file_on_disk(clean_token, &file_path) {
-        if let Ok(mut f) = TokioFile::open(&local_path).await {
-            if let Ok(meta) = f.metadata().await {
-                let total_size = meta.len();
-
-                if let Some(range_header) = req_headers.get(header::RANGE) {
-                    if let Ok(range_str) = range_header.to_str() {
-                        if let Some(spec) = range_str.strip_prefix("bytes=") {
-                            let parts: Vec<&str> = spec.split('-').collect();
-                            if parts.len() == 2 {
-                                let p0 = parts[0].trim();
-                                let p1 = parts[1].trim();
-
-                                let (start, end) = if p0.is_empty() {
-                                    // Suffix range: bytes=-500 (last 500 bytes)
-                                    let suffix: u64 = p1.parse().unwrap_or(0);
-                                    let s = total_size.saturating_sub(suffix);
-                                    (s, total_size.saturating_sub(1))
-                                } else if p1.is_empty() {
-                                    // Prefix range: bytes=500- (from 500 to end)
-                                    let s: u64 = p0.parse().unwrap_or(0);
-                                    (s, total_size.saturating_sub(1))
-                                } else {
-                                    // Explicit range: bytes=start-end
-                                    let s: u64 = p0.parse().unwrap_or(0);
-                                    let e: u64 = p1.parse().unwrap_or(total_size.saturating_sub(1));
-                                    (s, e.min(total_size.saturating_sub(1)))
-                                };
-
-                                if start > end || start >= total_size {
-                                    // RFC 7233: 416 Range Not Satisfiable
-                                    let mut err_headers = HeaderMap::new();
-                                    err_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-                                    if let Ok(cr) = HeaderValue::from_str(&format!("bytes */{}", total_size)) {
-                                        err_headers.insert(header::CONTENT_RANGE, cr);
-                                    }
-                                    return Ok((StatusCode::RANGE_NOT_SATISFIABLE, err_headers, "").into_response());
-                                }
-
-                                let length = end - start + 1;
-                                if f.seek(std::io::SeekFrom::Start(start)).await.is_ok() {
-                                    if let Ok(cr) = HeaderValue::from_str(&format!(
-                                        "bytes {}-{}/{}",
-                                        start, end, total_size
-                                    )) {
-                                        resp_headers.insert(header::CONTENT_RANGE, cr);
-                                    }
-                                    resp_headers.insert(
-                                        header::CONTENT_LENGTH,
-                                        HeaderValue::from(length),
-                                    );
-                                    let stream =
-                                        ReaderStream::with_capacity(f.take(length), 64 * 1024);
-                                    let body = axum::body::Body::from_stream(stream);
-                                    return Ok((
-                                        StatusCode::PARTIAL_CONTENT,
-                                        resp_headers,
-                                        body,
-                                    )
-                                        .into_response());
-                                }
-                            }
-                        }
-                    }
+            ByteRange::Partial { start, end } if f.seek(std::io::SeekFrom::Start(start)).await.is_ok() => {
+                let length = end - start + 1;
+                if let Ok(cr) = HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")) {
+                    resp_headers.insert(header::CONTENT_RANGE, cr);
                 }
-
-                resp_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(total_size));
-                let stream = ReaderStream::with_capacity(f, 64 * 1024);
-                let body = axum::body::Body::from_stream(stream);
-                return Ok((resp_headers, body).into_response());
+                resp_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+                let body = Body::from_stream(ReaderStream::with_capacity(f.take(length), CHUNK));
+                return Ok((StatusCode::PARTIAL_CONTENT, resp_headers, body).into_response());
             }
+            _ => {}
         }
+        resp_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(total));
+        let body = Body::from_stream(ReaderStream::with_capacity(f, CHUNK));
+        return Ok((resp_headers, body).into_response());
     }
 
-    // 2. Fall back to upstream file stream
-    let (body, content_len) = state
-        .engine
-        .open_file_stream(clean_token, &file_path)
-        .await?;
-
-    if !state.config.local_mode {
-        if let Some(len) = content_len {
-            if len > 20 * 1024 * 1024 {
-                return Err(TelegramError::BadRequest("Bad Request: file is too big".to_string()));
-            }
-        }
-    }
+    // 2. Fall back to the upstream file stream
+    let (body, content_len) = state.engine.open_file_stream(token, file_path).await?;
 
     if let Some(len) = content_len {
+        if !state.engine.local_mode && len > MAX_NON_LOCAL_SIZE {
+            return Err(too_big());
+        }
         resp_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(len));
     }
 
     Ok((resp_headers, body).into_response())
 }
 
-/// Serve file content for Test DC environment: GET /test/file/bot{token}/{*file_path}
-pub async fn serve_test_file(
-    _req_headers: HeaderMap,
-    Path((token, file_path)): Path<(String, String)>,
-    State(state): State<AppState>,
-) -> TelegramResult<Response> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    state.engine.check_token_filter(clean_token)?;
-    let dl_url = format!("https://api.telegram.org/test/file/bot{clean_token}/{file_path}");
-    let resp = state
-        .engine
-        .client
-        .get(&dl_url)
-        .send()
-        .await
-        .map_err(|e| crate::error::TelegramError::Internal(format!("File download network error: {e}")))?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    if !resp.status().is_success() {
-        return Err(crate::error::TelegramError::from_http_status(
-            resp.status().as_u16(),
-            &format!("File download failed: status {}", resp.status()),
-        ));
+    fn r(h: &str, total: u64) -> ByteRange {
+        parse_range(Some(&HeaderValue::from_str(h).unwrap()), total)
     }
 
-    let mut resp_headers = HeaderMap::new();
-    if let Some(ct) = resp.headers().get(header::CONTENT_TYPE) {
-        resp_headers.insert(header::CONTENT_TYPE, ct.clone());
+    #[test]
+    fn range_parsing() {
+        use ByteRange::*;
+        assert_eq!(parse_range(None, 10), Full);
+        assert_eq!(r("bytes=2-5", 10), Partial { start: 2, end: 5 });
+        assert_eq!(r("bytes=7-", 10), Partial { start: 7, end: 9 });
+        assert_eq!(r("bytes=-3", 10), Partial { start: 7, end: 9 });
+        assert_eq!(r("bytes=5-500", 10), Partial { start: 5, end: 9 });
+        assert_eq!(r("bytes= 1 - 2 ", 10), Partial { start: 1, end: 2 });
+        assert_eq!(r("bytes=10-", 10), Unsatisfiable);
+        assert_eq!(r("bytes=5-2", 10), Unsatisfiable);
+        assert_eq!(r("bytes=-abc", 10), Unsatisfiable);
+        assert_eq!(r("bytes=0-0", 0), Unsatisfiable);
+        // not a single byte range: ignored
+        assert_eq!(r("bytes=0-1-2", 10), Full);
+        assert_eq!(r("bytes=5", 10), Full);
+        assert_eq!(r("items=0-1", 10), Full);
     }
-    if let Some(cl) = resp.headers().get(header::CONTENT_LENGTH) {
-        resp_headers.insert(header::CONTENT_LENGTH, cl.clone());
-    }
-
-    let body = axum::body::Body::from_stream(resp.bytes_stream());
-    Ok((resp_headers, body).into_response())
 }

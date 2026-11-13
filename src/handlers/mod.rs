@@ -1,19 +1,11 @@
 pub mod bot;
 pub mod files;
 pub mod generic;
-pub mod messages;
+mod large_upload;
 pub mod stats;
-pub mod updates;
+pub mod test_dc;
 
 pub use bot::{close, get_me, log_out};
-pub use files::{
-    get_file, send_animation, send_audio, send_document, send_photo, send_video, send_voice,
-    serve_file, serve_test_file,
-};
-pub use generic::{
-    fallback_404_handler, generic_get_handler, generic_get_test_handler, generic_post_handler,
-    generic_post_test_handler,
-};
-pub use messages::{delete_message, edit_message_text, send_message};
-pub use stats::get_stats;
-pub use updates::{delete_webhook, get_updates, get_webhook_info, set_webhook};
+pub use files::serve_file;
+pub use generic::{fallback_404_handler, relay_handler};
+pub use test_dc::{relay_test_handler, serve_test_file};

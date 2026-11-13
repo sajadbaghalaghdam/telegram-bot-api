@@ -1,6 +1,19 @@
 pub mod engine;
+pub mod files;
+mod local_media;
 pub mod manager;
+pub mod profile;
+pub mod relay;
+pub mod reply;
+pub mod token;
+pub mod upload;
+mod upstream;
+pub mod util;
 pub mod webhook;
+pub mod webhook_api;
 
 pub use engine::TelegramEngine;
-pub use manager::{BotSession, ClientManager};
+pub use manager::ClientManager;
+
+#[cfg(test)]
+pub(crate) mod test_support;

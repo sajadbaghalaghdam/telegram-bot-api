@@ -39,23 +39,6 @@ pub struct User {
     pub supports_inline_queries: Option<bool>,
 }
 
-impl User {
-    /// Creates a new User instance with required fields.
-    pub fn new(id: i64, is_bot: bool, first_name: impl Into<String>) -> Self {
-        Self {
-            id,
-            is_bot,
-            first_name: first_name.into(),
-            last_name: None,
-            username: None,
-            language_code: None,
-            can_join_groups: None,
-            can_read_all_group_messages: None,
-            supports_inline_queries: None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,7 +76,17 @@ mod tests {
 
     #[test]
     fn test_user_optional_fields_skipped() {
-        let user = User::new(123, false, "Minimal");
+        let user = User {
+            id: 123,
+            is_bot: false,
+            first_name: "Minimal".to_string(),
+            last_name: None,
+            username: None,
+            language_code: None,
+            can_join_groups: None,
+            can_read_all_group_messages: None,
+            supports_inline_queries: None,
+        };
         let serialized = serde_json::to_value(&user).unwrap();
         
         let expected = json!({

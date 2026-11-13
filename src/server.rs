@@ -15,7 +15,6 @@ use crate::stats::ServerStats;
 use crate::watchdog::Watchdog;
 
 /// AppState holds the shared application state across all request handlers matching official ClientManager.h
-#[derive(Clone)]
 pub struct AppState {
     pub config: Arc<ServerConfig>,
     pub engine: Arc<TelegramEngine>,
@@ -24,9 +23,12 @@ pub struct AppState {
     pub watchdog: Arc<Watchdog>,
 }
 
-/// Zero-allocation telemetry & watchdog middleware
+/// The state as handlers see it: one `Arc`, so a request clones a single pointer instead of five.
+pub type SharedState = Arc<AppState>;
+
+/// Telemetry & watchdog middleware: atomics only, no allocation of its own.
 async fn telemetry_middleware(
-    State(state): State<AppState>,
+    State(state): State<SharedState>,
     req: Request,
     next: Next,
 ) -> Response {
@@ -61,6 +63,7 @@ async fn telemetry_middleware(
 
 /// Creates the Axum router with defined routes for the Telegram Bot API.
 pub fn create_router(state: AppState) -> Router {
+    let state: SharedState = Arc::new(state);
     Router::new()
         .route("/health", get(health_check))
 
@@ -73,16 +76,16 @@ pub fn create_router(state: AppState) -> Router {
         .route("/bot/{token}/logOut", post(handlers::log_out).get(handlers::log_out))
 
         // Universal Routes for 100% of all 185+ Telegram Bot API methods (JSON, Multipart, Form, Query)
-        .route("/{token}/{method}", post(handlers::generic_post_handler).get(handlers::generic_get_handler))
-        .route("/bot/{token}/{method}", post(handlers::generic_post_handler).get(handlers::generic_get_handler))
+        .route("/{token}/{method}", post(handlers::relay_handler).get(handlers::relay_handler))
+        .route("/bot/{token}/{method}", post(handlers::relay_handler).get(handlers::relay_handler))
 
         // File download routes (/file/bot{token}/{file_path} and /file/{token}/{file_path})
         .route("/file/{token}/{*file_path}", get(handlers::serve_file))
         .route("/file/bot/{token}/{*file_path}", get(handlers::serve_file))
 
         // Test DC environment routes (matching official HttpServer.h /test/ routes)
-        .route("/test/{token}/{method}", post(handlers::generic_post_test_handler).get(handlers::generic_get_test_handler))
-        .route("/test/bot/{token}/{method}", post(handlers::generic_post_test_handler).get(handlers::generic_get_test_handler))
+        .route("/test/{token}/{method}", post(handlers::relay_test_handler).get(handlers::relay_test_handler))
+        .route("/test/bot/{token}/{method}", post(handlers::relay_test_handler).get(handlers::relay_test_handler))
         .route("/test/file/{token}/{*file_path}", get(handlers::serve_test_file))
         .route("/test/file/bot/{token}/{*file_path}", get(handlers::serve_test_file))
 
@@ -96,3 +99,6 @@ pub fn create_router(state: AppState) -> Router {
 async fn health_check() -> &'static str {
     "OK"
 }
+
+#[cfg(test)]
+mod tests;
