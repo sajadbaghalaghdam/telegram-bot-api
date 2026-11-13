@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Cache-line padded atomic counter (64 bytes aligned) to prevent CPU False Sharing
@@ -21,25 +21,6 @@ impl CacheAlignedAtomicU64 {
     }
 }
 
-#[repr(align(64))]
-pub struct CacheAlignedAtomicUsize(AtomicUsize);
-
-impl CacheAlignedAtomicUsize {
-    pub fn new(val: usize) -> Self {
-        Self(AtomicUsize::new(val))
-    }
-
-    #[inline(always)]
-    pub fn store(&self, val: usize, order: Ordering) {
-        self.0.store(val, order);
-    }
-
-    #[inline(always)]
-    pub fn load(&self, order: Ordering) -> usize {
-        self.0.load(order)
-    }
-}
-
 /// High-performance lock-free server statistics matching official C++ Stats.h/Stats.cpp
 /// Features cache-line padding to eliminate False Sharing under high concurrency.
 pub struct ServerStats {
@@ -49,7 +30,6 @@ pub struct ServerStats {
     pub error_requests: CacheAlignedAtomicU64,
     pub bytes_received: CacheAlignedAtomicU64,
     pub bytes_sent: CacheAlignedAtomicU64,
-    pub active_bots: CacheAlignedAtomicUsize,
 }
 
 impl Default for ServerStats {
@@ -67,7 +47,6 @@ impl ServerStats {
             error_requests: CacheAlignedAtomicU64::new(0),
             bytes_received: CacheAlignedAtomicU64::new(0),
             bytes_sent: CacheAlignedAtomicU64::new(0),
-            active_bots: CacheAlignedAtomicUsize::new(0),
         }
     }
 
@@ -87,37 +66,57 @@ impl ServerStats {
         self.bytes_sent.fetch_add(bytes_out, Ordering::Relaxed);
     }
 
-    #[inline(always)]
-    pub fn set_active_bots(&self, count: usize) {
-        self.active_bots.store(count, Ordering::Relaxed);
-    }
-
     pub fn uptime_seconds(&self) -> f64 {
         self.start_time.elapsed().as_secs_f64()
     }
 
-    /// Generates the report in the C++ `/stats` style: tab-separated `key\tvalue` rows.
-    /// Per-bot sections and time-windowed (5sec/1min/1hour) values are not tracked by this port.
-    pub fn to_report(&self) -> String {
-        let uptime = self.uptime_seconds() as u64;
+    /// Generates the report in the layout of C++ `ClientManager::get_stats` (ClientManager.cpp:232-236):
+    /// the `DURATION\tinf\t5sec\t1min\t1hour` header, then tab-separated `key\tvalue` rows, `uptime` as a float.
+    /// Only lifetime values exist in this port, so rows carry a single value. Missing vs C++: CPU rows,
+    /// buffer/webhook/network-query counters, per-bot blocks and the 5sec/1min/1hour windows.
+    pub fn to_report(&self, bot_count: usize, active_bot_count: usize) -> String {
+        let uptime = self.uptime_seconds();
         let total = self.total_requests.load(Ordering::Relaxed);
         let ok = self.ok_requests.load(Ordering::Relaxed);
         let err = self.error_requests.load(Ordering::Relaxed);
         let bin = self.bytes_received.load(Ordering::Relaxed);
         let bout = self.bytes_sent.load(Ordering::Relaxed);
-        let bots = self.active_bots.load(Ordering::Relaxed);
 
-        format!(
-            "uptime\t{uptime}\n\
-            bot_count\t{bots}\n\
-            active_bot_count\t{bots}\n\
-            total_requests\t{total}\n\
+        let mut out = format!(
+            "DURATION\tinf\t5sec\t1min\t1hour\n\
+            uptime\t{uptime}\n\
+            bot_count\t{bot_count}\n\
+            active_bot_count\t{active_bot_count}\n"
+        );
+        out.push_str(&mem_lines());
+        out.push_str(&format!(
+            "total_requests\t{total}\n\
             successful_requests\t{ok}\n\
             error_requests\t{err}\n\
             bytes_received\t{bin}\n\
             bytes_sent\t{bout}\n"
-        )
+        ));
+        out
     }
+}
+
+/// `rss`/`vm`/`rss_peak`/`vm_peak` rows from /proc/self/status (Linux only; empty elsewhere).
+fn mem_lines() -> String {
+    std::fs::read_to_string("/proc/self/status")
+        .map(|s| parse_mem_lines(&s))
+        .unwrap_or_default()
+}
+
+fn parse_mem_lines(status: &str) -> String {
+    let mut out = String::new();
+    for (field, key) in [("VmRSS", "rss"), ("VmSize", "vm"), ("VmHWM", "rss_peak"), ("VmPeak", "vm_peak")] {
+        let prefix = format!("{field}:");
+        if let Some(line) = status.lines().find(|l| l.starts_with(&prefix)) {
+            let kb: f64 = line[prefix.len()..].trim().trim_end_matches("kB").trim().parse().unwrap_or(0.0);
+            out.push_str(&format!("{key}\t{:.1}MiB\n", kb / 1024.0));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -125,15 +124,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn report_is_tab_separated() {
+    fn report_has_cpp_header_and_keys() {
         let s = ServerStats::new();
         s.record_request(10);
         s.record_response(true, 20);
-        s.set_active_bots(3);
-        let r = s.to_report();
-        assert!(r.contains("\nbot_count\t3\n"));
+        let r = s.to_report(3, 2);
+        let mut lines = r.lines();
+        assert_eq!(lines.next().unwrap(), "DURATION\tinf\t5sec\t1min\t1hour");
+        let up = lines.next().unwrap();
+        assert!(up.starts_with("uptime\t") && up[7..].parse::<f64>().is_ok());
+        assert_eq!(lines.next().unwrap(), "bot_count\t3");
+        assert_eq!(lines.next().unwrap(), "active_bot_count\t2");
         assert!(r.contains("total_requests\t1\n"));
         assert!(r.contains("bytes_sent\t20\n"));
-        assert!(r.lines().all(|l| l.split('\t').count() == 2));
+        assert!(r.lines().skip(1).all(|l| l.split('\t').count() == 2));
+    }
+
+    #[test]
+    fn mem_parsing() {
+        let s = "VmPeak:\t  2048 kB\nVmSize:\t 1024 kB\nVmHWM:\t 512 kB\nVmRSS:\t 256 kB\n";
+        assert_eq!(parse_mem_lines(s), "rss\t0.2MiB\nvm\t1.0MiB\nrss_peak\t0.5MiB\nvm_peak\t2.0MiB\n");
     }
 }

@@ -168,7 +168,9 @@ impl StorageEngine {
                 return Some(Arc::clone(&cached.value().0));
             }
         }
-        self.l1_bots.remove(token);
+        // Remove only if still stale: a concurrent save_bot may have just inserted a fresh entry.
+        let now = Self::now_unix();
+        self.l1_bots.remove_if(token, |_, (_, ts)| !Self::bot_fresh(*ts, now));
 
         let reader = self.next_reader();
         let token_owned = token.to_string();
@@ -184,18 +186,32 @@ impl StorageEngine {
             if !Self::bot_fresh(updated_at, Self::now_unix()) {
                 return None;
             }
-            serde_json::from_str::<User>(&json_str).ok()
+            serde_json::from_str::<User>(&json_str).ok().map(|u| (u, updated_at))
         })
         .await
         .ok()
         .flatten()?;
 
-        let arc_user = Arc::new(user_opt);
+        let (user, updated_at) = user_opt;
+        let arc_user = Arc::new(user);
         if self.l1_bots.len() >= MAX_L1_CACHE_ENTRIES {
             self.l1_bots.clear();
         }
-        self.l1_bots.insert(token.to_string(), (Arc::clone(&arc_user), Self::now_unix()));
-        Some(arc_user)
+        // Carry the DB timestamp (not "now") so the TTL counts from the real fetch time, and never
+        // overwrite a newer entry stored concurrently by save_bot.
+        match self.l1_bots.entry(token.to_string()) {
+            dashmap::mapref::entry::Entry::Occupied(e) if e.get().1 >= updated_at => {
+                Some(Arc::clone(&e.get().0))
+            }
+            dashmap::mapref::entry::Entry::Occupied(mut e) => {
+                e.insert((Arc::clone(&arc_user), updated_at));
+                Some(arc_user)
+            }
+            dashmap::mapref::entry::Entry::Vacant(e) => {
+                e.insert((Arc::clone(&arc_user), updated_at));
+                Some(arc_user)
+            }
+        }
     }
 
     /// Persists Bot User profile into L1 DashMap and SQLite WAL asynchronously.
@@ -466,5 +482,25 @@ mod tests {
         assert!(StorageEngine::column_exists(&conn, "webhooks", "ip_address").unwrap());
         assert!(StorageEngine::column_exists(&conn, "webhooks", "allowed_updates").unwrap());
         StorageEngine::init_schema(&conn).unwrap(); // idempotent
+    }
+
+    #[tokio::test]
+    async fn l1_entry_carries_db_timestamp_and_stale_is_dropped() {
+        let dir = std::env::temp_dir().join(format!("tba_store_test_{}", std::process::id()));
+        let st = StorageEngine::new(&dir).unwrap();
+        let user: User = serde_json::from_str(r#"{"id":1,"is_bot":true,"first_name":"b"}"#).unwrap();
+        let old = StorageEngine::now_unix() - 100;
+        let json = serde_json::to_string(&user).unwrap();
+        st.writer.lock().unwrap().execute(
+            "INSERT INTO bots (token, bot_id, username, first_name, user_json, updated_at) VALUES ('t', 1, NULL, 'b', ?1, ?2)",
+            params![json, old],
+        ).unwrap();
+        assert!(st.get_bot("t").await.is_some());
+        assert_eq!(st.l1_bots.get("t").unwrap().1, old, "L1 must carry the DB updated_at");
+        // Expired rows are not served.
+        st.writer.lock().unwrap().execute("UPDATE bots SET updated_at = ?1", params![old - BOT_PROFILE_TTL_SECS]).unwrap();
+        st.l1_bots.clear();
+        assert!(st.get_bot("t").await.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

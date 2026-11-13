@@ -133,9 +133,9 @@ Options:
       --temp-dir <TEMP_DIR>                      Directory for storing temporary files
       --http-port <PORT>                         HTTP listening port [default: 8081]
       --http-ip-address <IP>                     HTTP IP address [default: 0.0.0.0]
-      --http-stat-port <PORT>                    HTTP statistics listening port
+      --http-stat-port <PORT>                    HTTP statistics listening port (0 or unset disables)
       --log <PATH>                               Path to log file
-  -v, --verbosity <LEVEL>                        Log verbosity level (0-5) [default: 2]
+  -v, --verbosity <LEVEL>                        Log verbosity (0=off, 1=error, 2=warn, 3=info, 4=debug, 5+=trace) [default: 0]; RUST_LOG (non-empty) overrides
   -h, --help                                     Print help
   -V, --version                                  Print version
 ```
