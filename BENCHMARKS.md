@@ -234,3 +234,93 @@ the suite (the commit message of an optimisation should quote before/after from 
   and results depend on oha and the mock competing for the same 8 vCPUs.
 * Runtime binary is the patched copy with debug symbols (44 MB on disk); only static numbers use the
   repository's stripped 7.7 MB binary.
+
+## 7. Round 4D results (process-level: allocator, threads, storage, dependencies)
+
+Same harness as above (`bench/lib.sh`, now with `--upstream-url`, no patched source), but a shorter
+protocol: sendMessage through the mock, **c=32 for 15 s then c=256 for 10 s, 3 fresh servers per
+variant**, RSS sampled after each load and 12 s after the last one. The machine was **shared with three
+other writers** (load average 3-7), so absolute numbers are lower and noisier than section 3; the same
+variant measured twice (`arena 4` rows) differs by ~15%. Compare *min of 3* and look for consistent
+gaps, not 5% differences. Raw files: `bench/.build/ab/<variant>/` (not committed).
+
+### 7.1 Allocator / arena / trim (before = `M_ARENA_MAX=4`, `malloc_trim(0)` every 10 s)
+
+| variant | c=32 req/s min / med | c=256 req/s min / med | p99 ms @256 | RSS MB after c32 / c256 / 12 s idle |
+|---|---|---|---|---|
+| arena 4 + trim (before), run 1 | 33.5k / 40.6k | 36.4k / 40.3k | 14.0 | 14-15 / 35-36 / 14-18 |
+| arena 4 + trim (before), run 2 | 28.0k / 32.1k | 33.4k / 33.7k | 17.6 | 15 / 35-36 / 13-17 |
+| **arena 8 (= workers) + trim (kept)** | **40.8k / 41.6k** | **50.8k / 52.0k** | **10.8** | 15-17 / 39 / 18-19 |
+| arena 4, no trim | 33.0k / 36.4k | 34.1k / 35.1k | 16.1 | 14-15 / 35-37 / **35-37** |
+| arena 8, no trim | 30.5k / 38.9k | 36.9k / 45.3k | 12.4 | 16-18 / 40-42 / **40-42** |
+| arena 8, no trim, default dynamic mmap/trim thresholds | 32.2k / 34.5k | 38.3k / 44.6k | 13.4 | 16-17 / 36-41 / 28-41 |
+| arena 8 + mimalloc crate (global allocator) | 35.0k / 36.1k | 49.3k / 50.6k | 11.7 | **34-37 / 58-63 / 58-63** |
+
+* **M_ARENA_MAX = worker count wins**: c=32 +22% (min) and c=256 +40% (min), p99 at c=256 -23%; server CPU
+  rises from ~3.3-4.1 to ~4.2-5.0 cores, i.e. the workers stop waiting on arena locks. Now derived from
+  `available_parallelism()` instead of a constant.
+* **Removing `malloc_trim` does not help** (no throughput or latency gain in 3 variants) and costs RSS: after a
+  burst the process keeps 35-42 MB instead of 14-19 MB. Kept; it runs on the watchdog thread, not on request paths.
+* **mimalloc rejected**: it is not faster than tuned glibc (c=32 -13%, c=256 equal), doubles-to-triples RSS
+  (34-37 MB idle after load vs 18 MB), adds a C build dependency and +169 KB to the binary.
+  A pure-Rust allocator was not added: the config-only change already captures the win.
+
+* Side effects on the idle process (final tree, `bench/run_all.sh` idle suite): threads 10 -> 11 (the SQLite writer),
+  RSS unchanged (9.5 MB), **VSZ 229 MB -> 493 MB** (8 reserved 64 MB arena heaps instead of 4; virtual only).
+  The `bench/run_all.sh` subsets `idle load webhook files` were re-run on the final tree with `--upstream-url`
+  (REPS=1 DUR=5 SUSTAINED=10): all pass with 0 errors; sustained RSS 12.0 -> 16.6 MB under load -> 12.9 MB after, threads 11-12.
+
+### 7.2 Storage / threads (getMe over 6,000 distinct tokens, c=32, 15 s, 3 runs; before vs after the arena+blocking cap+storage commits)
+
+| | req/s (3 runs) | p99 ms | threads at end (max) | fds | RSS MB | data dir |
+|---|---|---|---|---|---|---|
+| before | 46.3k / 41.9k / 39.0k | 3.4-3.9 | **47 / 52 / 47** | 53-54 | 19-20 | 5.9 MB |
+| after | 55.5k / 52.6k / 53.5k | 2.5-2.7 | **11 / 11 / 11 (12)** | 51-56 | 19 | 6.2 MB |
+
+SQLite writes now go through one dedicated writer thread (bounded queue, batched transactions, ack after commit),
+unchanged profiles are not rewritten, `bots`/`file_cache` rows unused for 30 days are purged at start-up and daily,
+and Tokio's blocking pool is capped at 16. Steady-state threads = 8 workers + main + watchdog + sqlite-writer.
+
+### 7.3 Binary size / dependencies / release profile (stripped release binary)
+
+| step | bytes | delta |
+|---|---|---|
+| baseline (section 3.1) | 7,712,376 | |
+| HEAD before the diet (new storage/shutdown code) | 7,759,480 | +47 KB |
+| drop `tracing-subscriber/env-filter` (regex stack; RUST_LOG `level`/`target=level` kept via `filter::Targets`) | 7,304,696 | **-454,784 (-5.9%)** |
+| trim tokio (`full` -> 8 features), axum (default features -> http1, tokio, json, query, multipart; no HTTP/2), tracing(-subscriber) defaults, mime_guess defaults | 7,171,512 | -133,184 (-1.8%) |
+| (not done) clap default features off | 7,149,784 | -21,728 (-0.3%), loses colour/suggestions |
+
+`cargo machete`: clean. `cargo tree -d`: base64 0.22 (reqwest 0.12) vs 0.23 (hyper-util) and syn 2 vs 3 remain;
+both come from third-party crates and cannot be unified without a reqwest major upgrade.
+
+Release profile (same code, sendMessage, c=32 / c=256, min / median of 3 req/s; sizes are `strip`ped):
+
+| profile | size | cold build | c=32 | c=256 | verdict |
+|---|---|---|---|---|---|
+| opt-level 3, fat LTO, cgu 1 (current) | 7.20 MB | 130 s | 41.7k / 42.1k | 48.3k / 49.7k | **kept** |
+| opt-level 2, fat LTO, cgu 1 | 6.47 MB | 155 s | 31.0k / 39.8k | 38.4k / 45.2k | slower, 10% smaller |
+| opt-level "s", fat LTO, cgu 1 | 5.10 MB (-29%) | 133 s | 34.8k / 39.5k | 43.9k / 46.8k | ~6% slower median; size-only option |
+| opt-level 3, thin LTO, cgu 16 | 8.65 MB (+20%) | 76 s | 39.1k / 40.4k | 48.8k / 49.4k | no gain; faster build only |
+
+Throughput differences between opt-level 3 and "s" are close to the run-to-run noise (about 6% in the
+medians, larger in the minimums); the repository optimises for performance, so opt-level 3 stays and
+`opt-level = "s"` is noted as a -29% size option if footprint ever matters more than ~5% CPU.
+
+### 7.4 Shutdown / resources
+
+* SIGTERM/SIGINT now: stop accepting, 10 s grace for open requests, abort all background tasks, flush the
+  SQLite writer queue and the log file, exit 0 (runtime check: idle SIGTERM/SIGINT exit 0 in ~7 ms; SIGTERM with a
+  20 s long poll in flight exits 0 after the 10 s grace). Previously the default signal action killed the process.
+* Every background task of `main.rs` is in a `JoinSet` / guard (CPU sampler, SIGUSR1/SIGHUP tasks, stats server,
+  watchdog heartbeat + thread); the only remaining unbounded-lifetime thread is the SQLite writer, which exits
+  when the storage engine is dropped. No locks are held across `.await` in the files of this round
+  (storage readers/writer use std mutexes only inside blocking closures / the writer thread).
+
+### 7.5 Not done / candidates
+
+* `ServerStats::record_request/response` take one global `Mutex` per call (2 per request); a per-second snapshot of the
+  existing atomic totals would remove it. Expected < 1% (no lock symbol in the profile); below what this machine can
+  resolve, so it was not changed.
+* `RotatingFile::write` takes a mutex and does a `write(2)` on the async worker per log line (only when logging is on).
+* TLS to upstream, MTProto and `--filter` remain unmeasured (section 6).
