@@ -82,6 +82,19 @@ fn telegram_dh_prime() -> BigUint {
     BigUint::parse_bytes(TELEGRAM_DH_PRIME_HEX.as_bytes(), 16).expect("valid hex")
 }
 
+/// `new_nonce_hash1` of `dh_gen_ok`: the lower 128 bits of
+/// `SHA1(new_nonce || 0x01 || auth_key_aux_hash)`, where `auth_key_aux_hash` is the higher
+/// 64 bits of `SHA1(auth_key)` (core.telegram.org/mtproto/auth_key, step 9).
+fn dh_gen_ok_nonce_hash(new_nonce: &[u8; 32], auth_key: &[u8; 256]) -> [u8; 16] {
+    let aux = Sha1::digest(auth_key);
+    let mut h = Sha1::new();
+    h.update(new_nonce);
+    h.update([1u8]);
+    h.update(&aux[..8]);
+    let digest = h.finalize();
+    digest[4..20].try_into().expect("16 bytes")
+}
+
 /// Subgroup residue rule: g must generate the quadratic-residue subgroup of the safe prime p
 /// (same rules as TDLib / OpenSSL DH_check for g in 2..=7).
 fn check_g_residue(g: i32, p: &BigUint) -> bool {
@@ -112,15 +125,13 @@ fn is_good_prime(p: &BigUint) -> bool {
 pub struct MtProtoHandshake<'a> {
     transport: &'a mut IntermediateTransport,
     dc_id: i32,
+    /// Last unencrypted msg_id used; ids must be strictly increasing even within one second.
+    last_msg_id: i64,
 }
 
 impl<'a> MtProtoHandshake<'a> {
-    pub fn new(transport: &'a mut IntermediateTransport) -> Self {
-        Self { transport, dc_id: 2 }
-    }
-
     pub fn with_dc(transport: &'a mut IntermediateTransport, dc_id: i32) -> Self {
-        Self { transport, dc_id }
+        Self { transport, dc_id, last_msg_id: 0 }
     }
 
     /// Executes the full 6-step MTProto 2.0 Diffie-Hellman handshake with Telegram DC
@@ -377,6 +388,11 @@ impl<'a> MtProtoHandshake<'a> {
         if gen_nonce != nonce || gen_server_nonce != server_nonce {
             return Err(Error::new(ErrorKind::InvalidData, "dh_gen_ok nonce mismatch"));
         }
+        // new_nonce_hash1 proves the server derived the same auth_key from our new_nonce.
+        let new_nonce_hash1 = read_int128(&mut gen_cursor).map_err(Self::tl_err)?;
+        if new_nonce_hash1 != dh_gen_ok_nonce_hash(&new_nonce, &auth_key) {
+            return Err(Error::new(ErrorKind::InvalidData, "dh_gen_ok new_nonce_hash1 mismatch"));
+        }
 
         let mut salt_bytes = [0u8; 8];
         for i in 0..8 {
@@ -397,15 +413,15 @@ impl<'a> MtProtoHandshake<'a> {
         })
     }
 
-    fn wrap_unencrypted(&self, payload: &[u8]) -> Vec<u8> {
+    fn wrap_unencrypted(&mut self, payload: &[u8]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(20 + payload.len());
         buf.extend_from_slice(&0i64.to_le_bytes()); // auth_key_id = 0
-        let msg_id = ((SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64)
-            << 32)
-            & !3i64;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        let mut msg_id = (((now.as_secs() as i64) << 32) + (((now.subsec_nanos() as i64) << 2) / 10)) & !3i64;
+        if msg_id <= self.last_msg_id {
+            msg_id = (self.last_msg_id + 4) & !3i64;
+        }
+        self.last_msg_id = msg_id;
         buf.extend_from_slice(&msg_id.to_le_bytes());
         buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         buf.extend_from_slice(payload);
@@ -442,6 +458,24 @@ impl<'a> MtProtoHandshake<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dh_gen_ok_hash_follows_the_specification_layout() {
+        let new_nonce = [0x11u8; 32];
+        let auth_key: [u8; 256] = std::array::from_fn(|i| i as u8);
+        // Independent spelling of the formula: SHA1(new_nonce + 01 + sha1(auth_key)[0..8])[4..20].
+        let aux = Sha1::digest(auth_key);
+        let mut input = new_nonce.to_vec();
+        input.push(1);
+        input.extend_from_slice(&aux[0..8]);
+        let expected = Sha1::digest(&input);
+        assert_eq!(dh_gen_ok_nonce_hash(&new_nonce, &auth_key).as_slice(), &expected[4..20]);
+        // Any change of key or nonce changes the hash.
+        let mut other = auth_key;
+        other[200] ^= 1;
+        assert_ne!(dh_gen_ok_nonce_hash(&new_nonce, &other), dh_gen_ok_nonce_hash(&new_nonce, &auth_key));
+        assert_ne!(dh_gen_ok_nonce_hash(&[0x12u8; 32], &auth_key), dh_gen_ok_nonce_hash(&new_nonce, &auth_key));
+    }
 
     #[test]
     fn dh_range_checks() {
