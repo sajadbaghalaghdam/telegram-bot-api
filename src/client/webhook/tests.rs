@@ -1,6 +1,6 @@
 //! End-to-end tests of the webhook worker against mock upstream / webhook servers.
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -603,5 +603,85 @@ async fn worker_exit_on_401_clears_registry() {
     }
     assert!(!engine.webhook_workers.contains_key("123456:XYZ"));
     assert!(!engine.webhook_states.contains_key("123456:XYZ"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+type HeldCalls = Arc<(AtomicUsize, AtomicUsize)>;
+
+/// Upstream whose getUpdates serves `n` single-update chats once; every other call (the webhook
+/// reply methods) is accepted and then held open until the client hangs up. Returns the port and
+/// the `(currently open, maximum open)` counters of held calls.
+async fn holding_upstream(n: i64) -> (u16, HeldCalls) {
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let counters: HeldCalls = Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
+    let c = counters.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut s, _) = l.accept().await.unwrap();
+            let c = c.clone();
+            tokio::spawn(async move {
+                let Some((head, body)) = read_request(&mut s).await else { return };
+                if head.contains("/getUpdates") {
+                    let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                    let off = v["offset"].as_i64().unwrap_or(0);
+                    let limit = v["limit"].as_i64().unwrap_or(100);
+                    let ups: Vec<Value> = (1..=n)
+                        .filter(|id| *id >= off)
+                        .take(limit as usize)
+                        .map(|id| serde_json::json!({"update_id": id, "message": {"chat": {"id": id}}}))
+                        .collect();
+                    if ups.is_empty() {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    respond(&mut s, "200 OK", &serde_json::json!({"ok": true, "result": ups}).to_string()).await;
+                } else {
+                    let open = c.0.fetch_add(1, Ordering::SeqCst) + 1;
+                    c.1.fetch_max(open, Ordering::SeqCst);
+                    let mut buf = [0u8; 64];
+                    while matches!(s.read(&mut buf).await, Ok(n) if n > 0) {}
+                    c.0.fetch_sub(1, Ordering::SeqCst);
+                }
+            });
+        }
+    });
+    (port, counters)
+}
+
+#[tokio::test]
+async fn reply_calls_are_bounded_and_cancelled_with_the_worker() {
+    // 400 updates, each answered by the webhook with a method call that upstream never answers:
+    // more than the executor (32 running + 256 queued) can take.
+    let (up, held) = holding_upstream(400).await;
+    let wh = reply_webhook(br#"{"method":"sendMessage","chat_id":1,"text":"hi"}"#.to_vec()).await;
+    let (engine, dir) = test_engine("wh_reply_bound", up);
+    let token = "123456:BOUND";
+    engine.start_webhook_worker(cfg(token, format!("http://127.0.0.1:{wh}/hook")));
+
+    // every update gets delivered (the held reply calls never delay delivery) ...
+    let mut pending = i64::MAX;
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let (p, _, _) = engine.webhook_states.get(token).unwrap().snapshot();
+        pending = p;
+        if held.0.load(Ordering::SeqCst) >= 32 && p == 0 {
+            break;
+        }
+    }
+    assert_eq!(pending, 0, "delivery must not wait for reply calls");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // ... while reply calls never exceed the concurrency cap
+    assert_eq!(held.0.load(Ordering::SeqCst), 32);
+    assert_eq!(held.1.load(Ordering::SeqCst), 32, "reply calls must stay bounded");
+
+    // stopping the worker cancels the calls in flight (the connections get closed)
+    engine.stop_webhook_worker(token);
+    for _ in 0..100 {
+        if held.0.load(Ordering::SeqCst) == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(held.0.load(Ordering::SeqCst), 0, "reply calls must not outlive the worker");
     let _ = std::fs::remove_dir_all(&dir);
 }
