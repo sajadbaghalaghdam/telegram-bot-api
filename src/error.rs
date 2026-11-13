@@ -140,13 +140,11 @@ impl IntoResponse for TelegramError {
         };
 
         let mut response = (status, Json(body)).into_response();
-        if let Some(ref p) = params {
-            if let Some(retry_after) = p.retry_after {
-                if let Ok(val) = retry_after.to_string().parse() {
+        if let Some(ref p) = params
+            && let Some(retry_after) = p.retry_after
+                && let Ok(val) = retry_after.to_string().parse() {
                     response.headers_mut().insert(axum::http::header::RETRY_AFTER, val);
                 }
-            }
-        }
         response
     }
 }

@@ -59,16 +59,14 @@ impl TelegramEngine {
         });
         let mut hint_username: Option<String> = None;
 
-        if let Ok(resp) = self.client.get(&chat_url).send().await {
-            if let Ok(val) = resp.json::<Value>().await {
-                if let Some(res_obj) = val.get("result") {
+        if let Ok(resp) = self.client.get(&chat_url).send().await
+            && let Ok(val) = resp.json::<Value>().await
+                && let Some(res_obj) = val.get("result") {
                     chat_json = res_obj.clone();
                     if let Some(u) = res_obj.get("username").and_then(|v| v.as_str()) {
                         hint_username = Some(u.to_string());
                     }
                 }
-            }
-        }
 
         // 2. Execute Pure-Rust MTProto 2.0 parallel 512 KB chunked upload + messages.sendMedia
         let uploaded = crate::mtproto::upload_and_send_large_file_typed(
@@ -127,11 +125,10 @@ impl TelegramEngine {
             }
         });
 
-        if let Some(u) = bot_user {
-            if let Ok(u_val) = serde_json::to_value(u) {
+        if let Some(u) = bot_user
+            && let Ok(u_val) = serde_json::to_value(u) {
                 msg_obj["from"] = u_val;
             }
-        }
         if !caption.is_empty() {
             msg_obj["caption"] = Value::String(caption.to_string());
         }

@@ -34,11 +34,10 @@ impl ClientManager {
 
     /// Retrieves an existing bot session or initializes a new one with zero global lock contention
     pub async fn get_or_create(&self, token: &str) -> TelegramResult<Arc<BotSession>> {
-        if let Some(session) = self.sessions.get(token) {
-            if session.created.elapsed() < SESSION_TTL {
+        if let Some(session) = self.sessions.get(token)
+            && session.created.elapsed() < SESSION_TTL {
                 return Ok(Arc::clone(session.value()));
             }
-        }
         self.sessions.remove(token);
 
         // Fetch bot metadata (backed by SQLite WAL + L1 cache in engine)

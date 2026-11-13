@@ -8,11 +8,10 @@ impl TelegramEngine {
     #[inline]
     pub fn record_active_bot(&self, token: &str) {
         let bot_id = token.split(':').next().unwrap_or(token);
-        if !bot_id.is_empty() && !self.active_bots.contains_key(bot_id) {
-            if self.active_bots.len() < 4096 {
+        if !bot_id.is_empty() && !self.active_bots.contains_key(bot_id)
+            && self.active_bots.len() < 4096 {
                 self.active_bots.insert(bot_id.to_string(), ());
             }
-        }
     }
 
     /// Drops a bot from the seen-bots map (called when upstream answers 401 for its token).
@@ -77,11 +76,10 @@ pub fn validate_token(token: &str, filter: Option<(u64, u64)>) -> Result<(), Tel
     let Some(id) = parsed else {
         return Err(forbidden());
     };
-    if let Some((rem, modulo)) = filter {
-        if modulo != 0 && (id as u64 % modulo) != rem {
+    if let Some((rem, modulo)) = filter
+        && modulo != 0 && (id as u64 % modulo) != rem {
             return Err(forbidden());
         }
-    }
     if id <= 0 || id >= (1i64 << 54) {
         return Err(invalid());
     }

@@ -86,11 +86,10 @@ impl TelegramEngine {
             if let Ok(proxy) = reqwest::Proxy::all(p) {
                 webhook_builder = webhook_builder.proxy(proxy);
             }
-            if std::env::var("TELEGRAM_UPSTREAM_PROXY").is_ok() {
-                if let Ok(proxy) = reqwest::Proxy::all(p) {
+            if std::env::var("TELEGRAM_UPSTREAM_PROXY").is_ok()
+                && let Ok(proxy) = reqwest::Proxy::all(p) {
                     client_builder = client_builder.proxy(proxy);
                 }
-            }
         }
 
         let client = client_builder

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use axum::{
     extract::{multipart::Field, FromRequest, Multipart, Request},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::Response,
 };
 use serde_json::{Map, Value};
@@ -180,6 +180,7 @@ pub async fn relay(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header;
 
     #[test]
     fn media_param_per_method() {

@@ -237,9 +237,9 @@ impl TelegramEngine {
     /// Execute getWebhookInfo. Locally delivered webhooks are answered from storage + worker
     /// state; cloud webhooks are answered by upstream.
     pub async fn get_webhook_info(&self, token: &str) -> TelegramResult<WebhookInfo> {
-        if self.local_mode {
-            if let Some(wh) = self.storage.get_webhook(token).await {
-                if super::webhook::should_restore(true, &wh.url) {
+        if self.local_mode
+            && let Some(wh) = self.storage.get_webhook(token).await
+                && super::webhook::should_restore(true, &wh.url) {
                     let (pending, err_date, err_msg) = self
                         .webhook_states
                         .get(token)
@@ -257,8 +257,6 @@ impl TelegramEngine {
                         allowed_updates: wh.allowed_updates,
                     });
                 }
-            }
-        }
 
         let url = format!("{}/bot{token}/getWebhookInfo", self.upstream_base_url);
         let resp: ApiResponse<WebhookInfo> = self

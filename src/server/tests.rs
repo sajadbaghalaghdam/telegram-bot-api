@@ -172,9 +172,7 @@ async fn requests_are_forwarded_unchanged() {
 #[tokio::test]
 async fn lifecycle_and_webhook_methods_are_golden() {
     let up = MockUpstream::start(|r| {
-        if r.target.contains("/logOut") {
-            ok("true")
-        } else if r.target.contains("/deleteWebhook") {
+        if r.target.contains("/logOut") || r.target.contains("/deleteWebhook") {
             ok("true")
         } else if r.target.contains("/getWebhookInfo") {
             ok(r#"{"url":"https://example.com/h","has_custom_certificate":false,"pending_update_count":3}"#)
@@ -451,8 +449,8 @@ async fn local_mode_json_with_local_path_becomes_multipart() {
     assert_eq!(&r[0].body[..], br#"{"chat_id":1,"text":"a/b"}"#);
 
     let text = |i: usize| String::from_utf8_lossy(&r[i].body).to_string();
-    for i in 1..4 {
-        assert!(r[i].content_type.as_deref().unwrap().starts_with("multipart/form-data; boundary="), "{i}");
+    for (i, req) in r.iter().enumerate().skip(1) {
+        assert!(req.content_type.as_deref().unwrap().starts_with("multipart/form-data; boundary="), "{i}");
         assert!(text(i).contains("JPEGDATA"), "{i}");
         assert!(text(i).contains(r#"filename="pic.jpg""#), "{i}");
     }
