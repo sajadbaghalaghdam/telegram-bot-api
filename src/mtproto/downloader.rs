@@ -244,6 +244,7 @@ pub async fn download_large_file_via_mtproto(
     // This immediately handles any DC migration (FILE_MIGRATE_X) and verifies authentication.
     let q0 = build_get_file_query(&loc, 0, CHUNK_SIZE as i32);
     let mut refreshed_auth = false;
+    let mut migrations = 0u32;
     let resp0 = loop {
         match main_conn.rpc_call(&q0).await {
             Ok(r) => break r,
@@ -251,6 +252,10 @@ pub async fn download_large_file_via_mtproto(
                 let err_msg = e.to_string();
                 tracing::warn!("[dl] chunk0 error on dc={}: {}", main_conn.dc_id, err_msg);
                 if let Some(target_dc) = MtProtoConnection::parse_migrate_dc(&err_msg) {
+                    migrations += 1;
+                    if migrations > 3 {
+                        return Err(Error::new(ErrorKind::Other, format!("Too many DC migrations: {}", err_msg)));
+                    }
                     main_conn = MtProtoConnection::connect_and_authorize(target_dc, api_id, api_hash, bot_token).await?;
                     continue;
                 }
@@ -265,8 +270,10 @@ pub async fn download_large_file_via_mtproto(
                 // If cached auth failed or dropped connection, refresh authorization once
                 if !refreshed_auth && (err_msg.contains("early eof") || err_msg.contains("TransportError") || err_msg.contains("AUTH_KEY")) {
                     refreshed_auth = true;
-                    tracing::info!("[dl] refreshing stale MTProto authorization on dc={}", loc.dc_id);
-                    main_conn = MtProtoConnection::connect_and_authorize_fresh(loc.dc_id, api_id, api_hash, bot_token).await?;
+                    // Refresh on the DC we are currently on (may differ from loc.dc_id after a migration)
+                    let cur_dc = main_conn.dc_id;
+                    tracing::info!("[dl] refreshing stale MTProto authorization on dc={}", cur_dc);
+                    main_conn = MtProtoConnection::connect_and_authorize_fresh(cur_dc, api_id, api_hash, bot_token).await?;
                     continue;
                 }
                 return Err(e);
@@ -374,7 +381,7 @@ pub async fn download_large_file_via_mtproto(
 
     let next_part = Arc::new(AtomicUsize::new(1));
     let eof_reached = Arc::new(AtomicBool::new(false));
-    let mut worker_handles = Vec::with_capacity(NUM_DOWNLOAD_WORKERS);
+    let mut worker_set = tokio::task::JoinSet::new();
 
     for _ in 0..NUM_DOWNLOAD_WORKERS {
         let tx_clone = tx.clone();
@@ -382,7 +389,7 @@ pub async fn download_large_file_via_mtproto(
         let eof_clone = Arc::clone(&eof_reached);
         let loc_clone = loc.clone();
 
-        worker_handles.push(tokio::spawn(async move {
+        worker_set.spawn(async move {
             let mut conn = MtProtoConnection::connect_with_auth(shared_auth, api_id).await?;
             loop {
                 if eof_clone.load(Ordering::Relaxed) {
@@ -454,25 +461,27 @@ pub async fn download_large_file_via_mtproto(
                 }
             }
             Ok::<(), Error>(())
-        }));
+        });
     }
 
     drop(tx);
 
+    // Fail fast: on the first worker error, abort the remaining workers immediately.
     let mut first_err = None;
-    for wh in &mut worker_handles {
-        match wh.await {
+    while let Some(joined) = worker_set.join_next().await {
+        match joined {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                if first_err.is_none() {
-                    first_err = Some(e);
-                }
+                first_err = Some(e);
             }
+            Err(e) if e.is_cancelled() => {}
             Err(e) => {
-                if first_err.is_none() {
-                    first_err = Some(Error::new(ErrorKind::Other, format!("Worker panicked: {e}")));
-                }
+                first_err = Some(Error::new(ErrorKind::Other, format!("Worker panicked: {e}")));
             }
+        }
+        if first_err.is_some() {
+            worker_set.abort_all();
+            break;
         }
     }
 
