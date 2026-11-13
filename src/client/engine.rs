@@ -328,7 +328,7 @@ impl TelegramEngine {
         }
 
         // 1. Fetch bot identity and target chat metadata (including username hint for peer resolution)
-        let bot_user = self.get_me(token).await.ok();
+        let bot_user = self.get_me_or_stale(token).await;
         let chat_url = format!(
             "{}/bot{token}/getChat?chat_id={}",
             self.upstream_base_url, chat_id_str
@@ -554,6 +554,23 @@ impl TelegramEngine {
             return Ok((*cached_user).clone());
         }
         self.get_me_fresh(token).await
+    }
+
+    /// getMe for the MTProto upload path: if the refresh fails for a transient reason (network / 5xx),
+    /// fall back to the expired cached profile instead of losing the bot identity. Auth errors
+    /// (401 etc.) are not masked.
+    async fn get_me_or_stale(&self, token: &str) -> Option<User> {
+        match self.get_me(token).await {
+            Ok(u) => Some(u),
+            Err(e) if is_transient_upstream_error(&e) => {
+                let stale = self.storage.get_bot_stale(token).await;
+                if stale.is_some() {
+                    tracing::warn!("getMe refresh failed ({e}); using stale cached bot profile");
+                }
+                stale.map(|u| (*u).clone())
+            }
+            Err(_) => None,
+        }
     }
 
     /// getMe straight from upstream (validates the token), refreshing the storage cache
@@ -1822,6 +1839,15 @@ pub fn media_attrs_for(
     MediaAttrs { kind, duration: num("duration"), width, height, supports_streaming }
 }
 
+/// True for failures that say nothing about the token itself: network/parse errors and upstream 5xx.
+fn is_transient_upstream_error(e: &TelegramError) -> bool {
+    match e {
+        TelegramError::Internal(_) => true,
+        TelegramError::ApiError { code, .. } => *code >= 500,
+        _ => false,
+    }
+}
+
 /// Pure token validation matching C++ ClientManager::send: structural problems and out-of-range ids -> 401,
 /// ids rejected by `--filter <remainder>/<modulo>` -> 421.
 pub fn validate_token(token: &str, filter: Option<(u64, u64)>) -> Result<(), TelegramError> {
@@ -1852,6 +1878,22 @@ pub fn validate_token(token: &str, filter: Option<(u64, u64)>) -> Result<(), Tel
 #[cfg(test)]
 mod token_tests {
     use super::*;
+
+    #[test]
+    fn transient_errors_allow_stale_profile() {
+        assert!(is_transient_upstream_error(&TelegramError::Internal("Network error: x".into())));
+        assert!(is_transient_upstream_error(&TelegramError::ApiError {
+            code: 502,
+            description: "Bad Gateway".into(),
+            parameters: None
+        }));
+        assert!(!is_transient_upstream_error(&TelegramError::ApiError {
+            code: 401,
+            description: "Unauthorized".into(),
+            parameters: None
+        }));
+        assert!(!is_transient_upstream_error(&TelegramError::Unauthorized("x".into())));
+    }
 
     #[test]
     fn token_validation() {
