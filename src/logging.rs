@@ -4,6 +4,18 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tracing_subscriber::filter::Targets;
+
+/// Builds the log filter: a non-empty `RUST_LOG` wins, otherwise `default_level` (from `-v`).
+/// Supported syntax is the `RUST_LOG` subset `level` and `target=level`, comma separated
+/// (e.g. `info`, `off`, `telegram_bot_api_rs=debug,hyper=warn`); span/field directives of
+/// `tracing_subscriber::EnvFilter` are not supported (this avoids the regex dependency stack).
+pub fn build_filter(rust_log: Option<&str>, default_level: &str) -> Result<Targets, String> {
+    let spec = rust_log.map(str::trim).filter(|v| !v.is_empty()).unwrap_or(default_level);
+    // Whitespace around directives is tolerated (as in EnvFilter).
+    let normalized = spec.split(',').map(str::trim).filter(|d| !d.is_empty()).collect::<Vec<_>>().join(",");
+    normalized.parse::<Targets>().map_err(|e| e.to_string())
+}
 
 struct Inner {
     path: PathBuf,
@@ -89,6 +101,24 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for RotatingFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::Level;
+
+    #[test]
+    fn filter_levels_and_targets() {
+        let off = build_filter(None, "off").unwrap();
+        assert!(!off.would_enable("x", &Level::ERROR));
+        let info = build_filter(Some("  "), "info").unwrap(); // blank RUST_LOG is ignored
+        assert!(info.would_enable("x", &Level::INFO) && !info.would_enable("x", &Level::DEBUG));
+        let f = build_filter(Some("warn,telegram_bot_api_rs::client=debug, hyper=off"), "off").unwrap();
+        assert!(f.would_enable("other", &Level::WARN) && !f.would_enable("other", &Level::INFO));
+        assert!(f.would_enable("telegram_bot_api_rs::client::engine", &Level::DEBUG));
+        assert!(!f.would_enable("hyper::proto", &Level::ERROR));
+        let only_target = build_filter(Some("telegram_bot_api_rs=trace"), "info").unwrap();
+        assert!(only_target.would_enable("telegram_bot_api_rs::server", &Level::TRACE));
+        assert!(!only_target.would_enable("hyper", &Level::ERROR), "unlisted targets are off, as with EnvFilter");
+        assert!(build_filter(Some("info,foo=loud"), "off").is_err());
+        assert!(build_filter(Some("foo=bar=baz"), "off").is_err());
+    }
 
     #[test]
     fn rotates_when_limit_exceeded() {

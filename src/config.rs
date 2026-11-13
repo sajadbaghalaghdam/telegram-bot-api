@@ -101,6 +101,35 @@ pub struct ServerConfig {
     /// HTTP proxy server for outgoing webhook requests in the format http://host:port
     #[arg(long = "proxy", env = "TELEGRAM_PROXY")]
     pub proxy: Option<String>,
+
+    /// Base URL of the upstream Bot API the server relays to (Rust-port extension, no C++ equivalent;
+    /// meant for tests, benchmarks and private mirrors). Must be an http(s) URL without query or fragment.
+    #[arg(
+        long = "upstream-url",
+        env = "TELEGRAM_UPSTREAM_URL",
+        default_value = DEFAULT_UPSTREAM_URL,
+        value_parser = parse_upstream_url
+    )]
+    pub upstream_url: String,
+}
+
+/// Production upstream used unless `--upstream-url` / `TELEGRAM_UPSTREAM_URL` says otherwise.
+pub const DEFAULT_UPSTREAM_URL: &str = "https://api.telegram.org";
+
+/// Validates `--upstream-url` and returns it without trailing slashes (the engine appends `/bot<token>/...`).
+fn parse_upstream_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    let url = reqwest::Url::parse(trimmed).map_err(|e| format!("invalid URL: {e}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("scheme must be http or https".into());
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err("URL must contain a host".into());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("URL must not contain a query or fragment".into());
+    }
+    Ok(trimmed.to_string())
 }
 
 impl ServerConfig {
@@ -273,6 +302,19 @@ mod tests {
         assert!(try_cfg(&["-s", "0"]).unwrap().stat_address().is_none());
         assert!(try_cfg(&[]).unwrap().stat_address().is_none());
         assert_eq!(try_cfg(&["-s", "9"]).unwrap().stat_address().unwrap().port(), 9);
+    }
+
+    #[test]
+    fn upstream_url_default_and_validation() {
+        assert_eq!(cfg().upstream_url, "https://api.telegram.org");
+        assert_eq!(try_cfg(&["--upstream-url", "http://127.0.0.1:9/"]).unwrap().upstream_url, "http://127.0.0.1:9");
+        assert_eq!(
+            try_cfg(&["--upstream-url", "https://mirror.example/api//"]).unwrap().upstream_url,
+            "https://mirror.example/api"
+        );
+        for bad in ["", "api.telegram.org", "ftp://x", "http://", "http://h/?a=1", "http://h/#f", "not a url"] {
+            assert!(try_cfg(&["--upstream-url", bad]).is_err(), "{bad:?} must be rejected");
+        }
     }
 
     #[test]
