@@ -99,7 +99,6 @@ async fn handle(State((responder, log)): State<(Responder, Log)>, req: Request) 
 /// A running application (router + engine) wired to a mock upstream.
 pub struct TestApp {
     pub base: String,
-    pub engine: Arc<TelegramEngine>,
     pub http: reqwest::Client,
     pub dir: PathBuf,
 }
@@ -117,7 +116,7 @@ impl TestApp {
         let state = AppState {
             config: Arc::new(config),
             engine: Arc::clone(&engine),
-            client_manager: Arc::new(ClientManager::new(Arc::clone(&engine))),
+            client_manager: Arc::new(ClientManager::new(engine)),
             stats: Arc::new(crate::stats::ServerStats::new()),
             watchdog: crate::watchdog::Watchdog::new(60),
         };
@@ -129,7 +128,6 @@ impl TestApp {
         });
         Self {
             base,
-            engine,
             http: reqwest::Client::new(),
             dir: std::fs::canonicalize(&dir).unwrap(),
         }

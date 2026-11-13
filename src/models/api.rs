@@ -1,4 +1,3 @@
-use axum::{response::{IntoResponse, Response}, Json};
 use serde::{Deserialize, Serialize};
 
 /// Contains information about why a request was unsuccessful.
@@ -43,43 +42,6 @@ impl<T> ApiResponse<T> {
             parameters: None,
         }
     }
-
-    /// Creates an error API response.
-    #[inline]
-    pub fn error(error_code: u16, description: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            result: None,
-            error_code: Some(error_code),
-            description: Some(description.into()),
-            parameters: None,
-        }
-    }
-
-    /// Creates an error API response with parameters (e.g. retry_after).
-    #[inline]
-    pub fn error_with_params(
-        error_code: u16,
-        description: impl Into<String>,
-        parameters: ResponseParameters,
-    ) -> Self {
-        Self {
-            ok: false,
-            result: None,
-            error_code: Some(error_code),
-            description: Some(description.into()),
-            parameters: Some(parameters),
-        }
-    }
-}
-
-impl<T> IntoResponse for ApiResponse<T>
-where
-    T: Serialize,
-{
-    fn into_response(self) -> Response {
-        Json(self).into_response()
-    }
 }
 
 #[cfg(test)]
@@ -91,29 +53,5 @@ mod tests {
         let resp = ApiResponse::success(42);
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, r#"{"ok":true,"result":42}"#);
-    }
-
-    #[test]
-    fn test_error_serialization() {
-        let resp = ApiResponse::<()>::error(400, "Bad Request");
-        let json = serde_json::to_string(&resp).unwrap();
-        assert_eq!(json, r#"{"ok":false,"error_code":400,"description":"Bad Request"}"#);
-    }
-
-    #[test]
-    fn test_error_with_params_serialization() {
-        let resp = ApiResponse::<()>::error_with_params(
-            429,
-            "Too Many Requests: retry after 5",
-            ResponseParameters {
-                migrate_to_chat_id: None,
-                retry_after: Some(5),
-            },
-        );
-        let json = serde_json::to_string(&resp).unwrap();
-        assert_eq!(
-            json,
-            r#"{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 5","parameters":{"retry_after":5}}"#
-        );
     }
 }

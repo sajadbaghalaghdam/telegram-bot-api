@@ -6,4 +6,4 @@ pub use engine::TelegramEngine;
 
 #[cfg(test)]
 pub(crate) mod test_support;
-pub use manager::{BotSession, ClientManager};
+pub use manager::ClientManager;

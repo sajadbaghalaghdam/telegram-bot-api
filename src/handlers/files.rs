@@ -2,87 +2,12 @@ use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    Json,
 };
 use tokio::fs::File as TokioFile;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 use crate::error::{TelegramError, TelegramResult};
-use crate::models::{
-    ApiResponse, File, GetFileRequest, Message, SendAnimationRequest, SendAudioRequest,
-    SendDocumentRequest, SendPhotoRequest, SendVideoRequest, SendVoiceRequest,
-};
 use crate::server::AppState;
-
-pub async fn send_photo(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<SendPhotoRequest>,
-) -> TelegramResult<Json<ApiResponse<Message>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let msg = state.engine.send_photo(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(msg)))
-}
-
-pub async fn send_document(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<SendDocumentRequest>,
-) -> TelegramResult<Json<ApiResponse<Message>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let msg = state.engine.send_document(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(msg)))
-}
-
-pub async fn send_audio(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<SendAudioRequest>,
-) -> TelegramResult<Json<ApiResponse<Message>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let msg = state.engine.send_audio(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(msg)))
-}
-
-pub async fn send_video(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<SendVideoRequest>,
-) -> TelegramResult<Json<ApiResponse<Message>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let msg = state.engine.send_video(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(msg)))
-}
-
-pub async fn send_voice(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<SendVoiceRequest>,
-) -> TelegramResult<Json<ApiResponse<Message>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let msg = state.engine.send_voice(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(msg)))
-}
-
-pub async fn send_animation(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<SendAnimationRequest>,
-) -> TelegramResult<Json<ApiResponse<Message>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let msg = state.engine.send_animation(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(msg)))
-}
-
-pub async fn get_file(
-    Path(token): Path<String>,
-    State(state): State<AppState>,
-    Json(payload): Json<GetFileRequest>,
-) -> TelegramResult<Json<ApiResponse<File>>> {
-    let clean_token = token.strip_prefix("bot").unwrap_or(&token);
-    let file = state.engine.get_file(clean_token, &payload).await?;
-    Ok(Json(ApiResponse::success(file)))
-}
 
 /// Serve file content with O(1) memory streaming and HTTP Range support (matching C++ HttpFileConnection)
 pub async fn serve_file(

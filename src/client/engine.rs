@@ -13,12 +13,7 @@ use tokio_util::io::ReaderStream;
 
 use crate::mtproto::{MediaAttrs, MediaKind};
 use crate::error::{TelegramError, TelegramResult};
-use crate::models::{
-    ApiResponse, DeleteMessageRequest, EditMessageTextRequest, File, GetFileRequest,
-    GetUpdatesRequest, Message, SendAnimationRequest, SendAudioRequest, SendDocumentRequest,
-    SendMessageRequest, SendPhotoRequest, SendVideoRequest, SendVoiceRequest, SetWebhookRequest,
-    Update, User, WebhookInfo,
-};
+use crate::models::{ApiResponse, File, SetWebhookRequest, User, WebhookInfo};
 use crate::storage::StorageEngine;
 
 /// 64KB chunk size for O(1) constant-memory file streaming
@@ -608,265 +603,14 @@ impl TelegramEngine {
         Ok(user)
     }
 
-    /// Execute sendMessage
-    pub async fn send_message(
-        &self,
-        token: &str,
-        req: &SendMessageRequest,
-    ) -> TelegramResult<Message> {
-        let url = format!("{}/bot{token}/sendMessage", self.upstream_base_url);
-        let resp: ApiResponse<Message> = self
-            .client
-            .post(&url)
-            .json(req)
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-            )
-        })
-    }
-
-    /// Execute editMessageText
-    pub async fn edit_message_text(
-        &self,
-        token: &str,
-        req: &EditMessageTextRequest,
-    ) -> TelegramResult<Message> {
-        let url = format!("{}/bot{token}/editMessageText", self.upstream_base_url);
-        let resp: ApiResponse<Message> = self
-            .client
-            .post(&url)
-            .json(req)
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-            )
-        })
-    }
-
-    /// Execute deleteMessage
-    pub async fn delete_message(
-        &self,
-        token: &str,
-        req: &DeleteMessageRequest,
-    ) -> TelegramResult<bool> {
-        let url = format!("{}/bot{token}/deleteMessage", self.upstream_base_url);
-        let resp: ApiResponse<bool> = self
-            .client
-            .post(&url)
-            .json(req)
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-            )
-        })
-    }
-
-    /// Execute sendPhoto with O(1) memory streaming
-    pub async fn send_photo(&self, token: &str, req: &SendPhotoRequest) -> TelegramResult<Message> {
-        let url = format!("{}/bot{token}/sendPhoto", self.upstream_base_url);
-        let response = if let Some(local_path) = self.resolve_local_path(&req.photo) {
-            let part = Self::build_streaming_part(&local_path, "photo.jpg").await?;
-            let mut form = Form::new()
-                .text("chat_id", req.chat_id.to_string())
-                .part("photo", part);
-            if let Some(ref cap) = req.caption {
-                form = form.text("caption", cap.clone());
-            }
-            if let Some(ref pm) = req.parse_mode {
-                form = form.text("parse_mode", pm.clone());
-            }
-            self.client.post(&url).multipart(form).send().await
-        } else {
-            self.client.post(&url).json(req).send().await
-        };
-
-        let resp: ApiResponse<Message> = response
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-            )
-        })
-    }
-
-    /// Execute sendDocument with O(1) memory streaming
-    pub async fn send_document(
-        &self,
-        token: &str,
-        req: &SendDocumentRequest,
-    ) -> TelegramResult<Message> {
-        let url = format!("{}/bot{token}/sendDocument", self.upstream_base_url);
-        let response = if let Some(local_path) = self.resolve_local_path(&req.document) {
-            let part = Self::build_streaming_part(&local_path, "file.bin").await?;
-            let mut form = Form::new()
-                .text("chat_id", req.chat_id.to_string())
-                .part("document", part);
-            if let Some(ref cap) = req.caption {
-                form = form.text("caption", cap.clone());
-            }
-            if let Some(ref pm) = req.parse_mode {
-                form = form.text("parse_mode", pm.clone());
-            }
-            self.client.post(&url).multipart(form).send().await
-        } else {
-            self.client.post(&url).json(req).send().await
-        };
-
-        let resp: ApiResponse<Message> = response
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-            )
-        })
-    }
-
-    /// Execute sendAudio with O(1) memory streaming
-    pub async fn send_audio(&self, token: &str, req: &SendAudioRequest) -> TelegramResult<Message> {
-        let url = format!("{}/bot{token}/sendAudio", self.upstream_base_url);
-        let response = if let Some(local_path) = self.resolve_local_path(&req.audio) {
-            let part = Self::build_streaming_part(&local_path, "audio.mp3").await?;
-            let form = Form::new()
-                .text("chat_id", req.chat_id.to_string())
-                .part("audio", part);
-            self.client.post(&url).multipart(form).send().await
-        } else {
-            self.client.post(&url).json(req).send().await
-        };
-
-        let resp: ApiResponse<Message> = response
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-            )
-        })
-    }
-
-    /// Execute sendVideo with O(1) memory streaming
-    pub async fn send_video(&self, token: &str, req: &SendVideoRequest) -> TelegramResult<Message> {
-        let url = format!("{}/bot{token}/sendVideo", self.upstream_base_url);
-        let response = if let Some(local_path) = self.resolve_local_path(&req.video) {
-            let part = Self::build_streaming_part(&local_path, "video.mp4").await?;
-            let form = Form::new()
-                .text("chat_id", req.chat_id.to_string())
-                .part("video", part);
-            self.client.post(&url).multipart(form).send().await
-        } else {
-            self.client.post(&url).json(req).send().await
-        };
-
-        let resp: ApiResponse<Message> = response
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-            )
-        })
-    }
-
-    /// Execute sendVoice with O(1) memory streaming
-    pub async fn send_voice(&self, token: &str, req: &SendVoiceRequest) -> TelegramResult<Message> {
-        let url = format!("{}/bot{token}/sendVoice", self.upstream_base_url);
-        let response = if let Some(local_path) = self.resolve_local_path(&req.voice) {
-            let part = Self::build_streaming_part(&local_path, "voice.ogg").await?;
-            let form = Form::new()
-                .text("chat_id", req.chat_id.to_string())
-                .part("voice", part);
-            self.client.post(&url).multipart(form).send().await
-        } else {
-            self.client.post(&url).json(req).send().await
-        };
-
-        let resp: ApiResponse<Message> = response
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-            )
-        })
-    }
-
-    /// Execute sendAnimation with O(1) memory streaming
-    pub async fn send_animation(
-        &self,
-        token: &str,
-        req: &SendAnimationRequest,
-    ) -> TelegramResult<Message> {
-        let url = format!("{}/bot{token}/sendAnimation", self.upstream_base_url);
-        let response = if let Some(local_path) = self.resolve_local_path(&req.animation) {
-            let part = Self::build_streaming_part(&local_path, "animation.mp4").await?;
-            let form = Form::new()
-                .text("chat_id", req.chat_id.to_string())
-                .part("animation", part);
-            self.client.post(&url).multipart(form).send().await
-        } else {
-            self.client.post(&url).json(req).send().await
-        };
-
-        let resp: ApiResponse<Message> = response
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        resp.result.ok_or_else(|| {
-            TelegramError::BadRequest(
-                resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-            )
-        })
-    }
-
     /// Execute getFile with SQLite WAL lookup and chunked disk write in local mode
-    pub async fn get_file(&self, token: &str, req: &GetFileRequest) -> TelegramResult<File> {
-        if req.file_id.is_empty() {
+    pub async fn get_file(&self, token: &str, file_id: &str) -> TelegramResult<File> {
+        if file_id.is_empty() {
             return Err(TelegramError::BadRequest("file_id not specified".to_string()));
         }
 
         if self.local_mode {
-            if let Some(cached) = self.storage.get_cached_file(&req.file_id).await {
+            if let Some(cached) = self.storage.get_cached_file(&file_id).await {
                 if let Some(ref p) = cached.file_path {
                     let check_path = if Path::new(p).is_absolute() {
                         PathBuf::from(p)
@@ -887,7 +631,7 @@ impl TelegramEngine {
         let resp: ApiResponse<File> = self
             .client
             .get(&url)
-            .query(&[("file_id", &req.file_id)])
+            .query(&[("file_id", &file_id)])
             .send()
             .await
             .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
@@ -907,7 +651,7 @@ impl TelegramEngine {
                     self.api_id,
                     &self.api_hash,
                     token,
-                    &req.file_id,
+                    &file_id,
                     &target_dir,
                 )
                 .await
@@ -936,9 +680,9 @@ impl TelegramEngine {
                         .unwrap_or_else(|_| target_file.to_string_lossy().replace('\\', "/"))
                 };
 
-                let unique_id = format!("AgAD{:x}", req.file_id.len());
+                let unique_id = format!("AgAD{:x}", file_id.len());
                 let file = File {
-                    file_id: req.file_id.clone(),
+                    file_id: file_id.to_owned(),
                     file_unique_id: unique_id,
                     file_size: Some(total_bytes as i64),
                     file_path: Some(path_str),
@@ -1022,43 +766,6 @@ impl TelegramEngine {
         Ok(file)
     }
 
-    /// Execute getUpdates
-    pub async fn get_updates(
-        &self,
-        token: &str,
-        req: &GetUpdatesRequest,
-    ) -> TelegramResult<Vec<Update>> {
-        if self.webhook_workers.contains_key(token) {
-            return Err(TelegramError::Conflict(
-                "can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first".to_string(),
-            ));
-        }
-
-        let url = format!("{}/bot{token}/getUpdates", self.upstream_base_url);
-        let resp: ApiResponse<Vec<Update>> = self
-            .client
-            .post(&url)
-            .json(req)
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        if !resp.ok {
-            return Err(TelegramError::ApiError {
-                code: resp.error_code.unwrap_or(400),
-                description: resp.description.unwrap_or_else(|| "Unknown error".to_string()),
-                parameters: resp.parameters,
-            });
-        }
-
-        resp.result.ok_or_else(|| {
-            TelegramError::BadRequest("Unknown error".to_string())
-        })
-    }
-
     /// Asks the upstream Bot API to delete the cloud webhook (so getUpdates works); upstream
     /// errors are returned as-is.
     pub async fn delete_upstream_webhook(&self, token: &str, drop_pending_updates: bool) -> TelegramResult<()> {
@@ -1085,19 +792,10 @@ impl TelegramEngine {
         Ok(())
     }
 
-    /// Execute setWebhook from typed parameters. Locally delivered webhooks (local mode +
-    /// private/loopback http URL) are stored and delivered by a local worker; every other webhook
-    /// is proxied to the upstream Bot API (not stored, no local worker).
-    pub async fn set_webhook(
-        self: &Arc<Self>,
-        token: &str,
-        req: &SetWebhookRequest,
-    ) -> TelegramResult<bool> {
-        self.set_webhook_raw(token, req, None).await
-    }
-
-    /// Like [`set_webhook`], but when `raw` is given and the webhook goes to the cloud server the
-    /// original request (body, content type, query) is forwarded unchanged, so multipart
+    /// Executes setWebhook. Locally delivered webhooks (local mode + private/loopback http URL)
+    /// are stored and delivered by a local worker; every other webhook is proxied to the upstream
+    /// Bot API (not stored, no local worker). When `raw` is given and the webhook goes to the cloud
+    /// server the original request (body, content type, query) is forwarded unchanged, so multipart
     /// `certificate` uploads and every other parameter reach upstream as the client sent them.
     pub async fn set_webhook_raw(
         self: &Arc<Self>,
@@ -1493,7 +1191,7 @@ impl TelegramEngine {
                 }
             }
             if !file_id.is_empty() {
-                match self.get_file(token, &GetFileRequest { file_id }).await {
+                match self.get_file(token, &file_id).await {
                     Ok(file) => {
                         let resp = ApiResponse::success(file);
                         let vec = serde_json::to_vec(&resp).unwrap_or_default();
@@ -1788,30 +1486,6 @@ impl TelegramEngine {
         Ok(out)
     }
 
-    /// Generic caller for all 185+ Telegram Bot API methods
-    pub async fn generic_call(
-        &self,
-        token: &str,
-        method: &str,
-        payload: Option<&Value>,
-    ) -> TelegramResult<ApiResponse<Value>> {
-        let url = format!("{}/bot{token}/{method}", self.upstream_base_url);
-        let req = if let Some(body) = payload {
-            self.client.post(&url).json(body)
-        } else {
-            self.client.get(&url)
-        };
-
-        let resp: ApiResponse<Value> = req
-            .send()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-            .json()
-            .await
-            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-
-        Ok(resp)
-    }
 }
 
 /// Maps a send* method to its upload media kind and reads duration/width/height from request fields.

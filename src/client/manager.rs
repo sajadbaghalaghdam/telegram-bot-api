@@ -4,15 +4,13 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use crate::client::TelegramEngine;
 use crate::error::{TelegramError, TelegramResult};
-use crate::models::{ApiResponse, User};
+use crate::models::ApiResponse;
 
 const MAX_ACTIVE_SESSIONS: usize = 2048;
 
 /// Represents an active Bot session matching official Client.h
 /// Stores pre-serialized JSON bytes for zero-allocation, zero-serialization fast path responses.
 pub struct BotSession {
-    pub token: String,
-    pub me: User,
     pub me_json_bytes: Bytes,
     created: Instant,
 }
@@ -50,8 +48,6 @@ impl ClientManager {
             .map_err(|e| TelegramError::Internal(format!("Serialization error: {e}")))?;
 
         let session = Arc::new(BotSession {
-            token: token.to_string(),
-            me,
             me_json_bytes: Bytes::from(serialized),
             created: Instant::now(),
         });
