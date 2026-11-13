@@ -115,7 +115,7 @@ fn prepare_dirs(config: &ServerConfig) -> Dirs {
 fn init_logging(
     config: &ServerConfig,
     files_dir: &Path,
-    filter: tracing_subscriber::EnvFilter,
+    filter: tracing_subscriber::filter::Targets,
 ) -> Option<logging::RotatingFile> {
     let registry = tracing_subscriber::registry().with(filter);
     let Some(lf) = config.log_file.as_deref() else {
@@ -206,11 +206,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = config.address();
 
     // RUST_LOG overrides -v only when set to a non-empty value.
-    let filter = match std::env::var("RUST_LOG") {
-        Ok(v) if !v.trim().is_empty() => tracing_subscriber::EnvFilter::try_new(&v)
-            .unwrap_or_else(|e| fail(format!("Invalid RUST_LOG value: {e}"))),
-        _ => tracing_subscriber::EnvFilter::new(config.log_level()),
-    };
+    let rust_log = std::env::var("RUST_LOG").ok();
+    let filter = logging::build_filter(rust_log.as_deref(), config.log_level())
+        .unwrap_or_else(|e| fail(format!("Invalid RUST_LOG value: {e}")));
 
     let dirs = prepare_dirs(&config);
     let log_writer = init_logging(&config, &dirs.files, filter);
