@@ -96,3 +96,6 @@ pub fn create_router(state: AppState) -> Router {
 async fn health_check() -> &'static str {
     "OK"
 }
+
+#[cfg(test)]
+mod tests;
