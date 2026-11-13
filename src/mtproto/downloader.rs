@@ -1,12 +1,16 @@
 use bytes::BytesMut;
-use std::io::{Error, ErrorKind, SeekFrom};
+use std::io::{Error, ErrorKind};
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs::{self, OpenOptions};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
+use super::auth::CachedBotAuth;
 use super::connection::MtProtoConnection;
+use super::rpc_error::parse_migrate_dc;
 use super::file_id::{decode_file_id, extension_for_file_type, DecodedFileLocation};
 use super::tl::{read_bytes, read_int, write_bytes, write_int, write_long, write_string};
 
@@ -44,19 +48,19 @@ fn build_get_file_query(loc: &DecodedFileLocation, offset: i64, limit: i32) -> B
     q
 }
 
-/// Parses an upload.file#096a18d5 response chunk
-fn parse_upload_file_chunk(resp: &[u8]) -> Result<Vec<u8>, Error> {
+/// Parses an upload.file#096a18d5 response and returns the chunk bytes (borrowed, no copy).
+fn parse_upload_file_chunk(resp: &[u8]) -> Result<&[u8], Error> {
     if resp.len() < 12 {
-        return Ok(Vec::new());
+        return Ok(&[]);
     }
+    let tl = |e: super::tl::TLError| Error::new(ErrorKind::InvalidData, e.to_string());
     let mut cur = resp;
-    let ctor = read_int(&mut cur).map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))? as u32;
+    let ctor = read_int(&mut cur).map_err(tl)? as u32;
 
     if ctor == 0x096a18d5 {
-        let _file_type = read_int(&mut cur).map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
-        let _mtime = read_int(&mut cur).map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
-        let chunk_data = read_bytes(&mut cur).map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
-        Ok(chunk_data.to_vec())
+        let _file_type = read_int(&mut cur).map_err(tl)?;
+        let _mtime = read_int(&mut cur).map_err(tl)?;
+        read_bytes(&mut cur).map_err(tl)
     } else {
         Err(Error::new(
             ErrorKind::InvalidData,
@@ -90,6 +94,240 @@ fn is_past_eof_error(msg: &str) -> bool {
 /// several markers may arrive in any order).
 fn final_part_index(short_part: Option<usize>, min_empty_marker: Option<usize>) -> Option<usize> {
     short_part.or_else(|| min_empty_marker.and_then(|m| m.checked_sub(1)))
+}
+
+/// Upper bound on the number of parts of one download (4 GiB), so a server that never signals
+/// EOF cannot make us write forever.
+const MAX_DOWNLOAD_PARTS: usize = 8192;
+
+/// Re-attempts of one getFile (on a fresh connection) before the download fails.
+const MAX_PART_ATTEMPTS: u32 = 5;
+
+/// Chunk buffers in flight (being filled by workers, queued, or being written). This bounds the
+/// download's memory to `CHUNK_BUFFERS x 512 KiB` plus one receive buffer per connection.
+const CHUNK_BUFFERS: usize = NUM_DOWNLOAD_WORKERS * 2;
+
+/// Deletes the `.part` file on drop unless the download was committed, so every error and
+/// cancellation path (including a dropped future) cleans up.
+struct PartFileGuard {
+    path: PathBuf,
+    committed: bool,
+}
+
+impl Drop for PartFileGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Aborts the wrapped task when dropped (a plain `JoinHandle` detaches instead).
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Recycles chunk buffers between the download workers and the disk writer.
+struct ChunkPool {
+    free: std::sync::Mutex<Vec<Vec<u8>>>,
+    permits: Arc<Semaphore>,
+}
+
+impl ChunkPool {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { free: std::sync::Mutex::new(Vec::new()), permits: Arc::new(Semaphore::new(CHUNK_BUFFERS)) })
+    }
+
+    fn take(&self) -> Vec<u8> {
+        let recycled = self.free.lock().unwrap_or_else(|p| p.into_inner()).pop();
+        recycled.unwrap_or_else(|| Vec::with_capacity(CHUNK_SIZE))
+    }
+
+    fn put(&self, buf: Vec<u8>) {
+        self.free.lock().unwrap_or_else(|p| p.into_inner()).push(buf);
+    }
+}
+
+/// A downloaded part on its way to the writer; the permit is released once it is written.
+struct Chunk {
+    part_idx: usize,
+    /// Empty = "past EOF" marker.
+    data: Vec<u8>,
+    is_last: bool,
+    _permit: OwnedSemaphorePermit,
+}
+
+/// Writes parts at their offsets and decides the final length once all workers are done.
+async fn run_writer(
+    file: Arc<std::fs::File>,
+    mut rx: mpsc::Receiver<Chunk>,
+    pool: Arc<ChunkPool>,
+    first_chunk_len: u64,
+) -> Result<u64, Error> {
+    let mut received_parts = std::collections::HashSet::new();
+    received_parts.insert(0usize); // part 0 is already written
+    let mut short_part: Option<usize> = None;
+    let mut min_empty_marker: Option<usize> = None;
+    let mut max_written_bytes = first_chunk_len;
+    let mut final_total_bytes = None;
+
+    while let Some(chunk) = rx.recv().await {
+        let Chunk { part_idx, data, is_last, _permit } = chunk;
+        if data.is_empty() {
+            // Empty EOF marker: part_idx is past EOF, so part_idx - 1 was the final part.
+            // Several workers may report markers out of order; keep the lowest.
+            min_empty_marker = Some(min_empty_marker.map_or(part_idx, |m| m.min(part_idx)));
+            continue;
+        }
+
+        let offset = (part_idx * CHUNK_SIZE) as u64;
+        let end_offset = offset + data.len() as u64;
+        let file = Arc::clone(&file);
+        let data = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, Error> {
+            file.write_all_at(&data, offset)?;
+            Ok(data)
+        })
+        .await
+        .map_err(Error::other)??;
+        pool.put(data);
+        received_parts.insert(part_idx);
+
+        max_written_bytes = max_written_bytes.max(end_offset);
+        if is_last {
+            short_part = Some(part_idx);
+            final_total_bytes = Some(end_offset);
+        }
+    }
+
+    let Some(last_idx) = final_part_index(short_part, min_empty_marker) else {
+        return Err(Error::new(
+            ErrorKind::UnexpectedEof,
+            "Incomplete download: connection ended without reaching EOF",
+        ));
+    };
+    // Contiguity verification: assert that every part from 0 to last_idx was received without gaps
+    for part in 0..=last_idx {
+        if !received_parts.contains(&part) {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Incomplete download: chunk {} missing from range 0..={}", part, last_idx),
+            ));
+        }
+    }
+    let total_len = final_total_bytes.unwrap_or(max_written_bytes);
+    tokio::task::spawn_blocking(move || file.set_len(total_len)).await.map_err(Error::other)??;
+    Ok(total_len)
+}
+
+/// Shared state of the download workers.
+struct WorkerCtx {
+    loc: DecodedFileLocation,
+    auth: CachedBotAuth,
+    api_id: i32,
+    next_part: AtomicUsize,
+    eof_reached: AtomicBool,
+    pool: Arc<ChunkPool>,
+    tx: mpsc::Sender<Chunk>,
+}
+
+/// Outcome of fetching one part.
+enum PartFetch {
+    /// Data copied into the pooled buffer.
+    Data,
+    /// The part is at or past the end of the file.
+    Eof,
+}
+
+/// Fetches part `part_idx` into `buf` (cleared first), retrying on a fresh connection.
+async fn fetch_part(
+    ctx: &WorkerCtx,
+    conn: &mut MtProtoConnection,
+    part_idx: usize,
+    buf: &mut Vec<u8>,
+) -> Result<PartFetch, Error> {
+    let q = build_get_file_query(&ctx.loc, (part_idx * CHUNK_SIZE) as i64, CHUNK_SIZE as i32);
+    let mut attempt = 0u32;
+    loop {
+        let res = conn
+            .rpc_call_with(&q, |body| {
+                let chunk = parse_upload_file_chunk(body)?;
+                buf.clear();
+                buf.extend_from_slice(chunk);
+                Ok(())
+            })
+            .await;
+        match res {
+            Ok(()) if buf.is_empty() => return Ok(PartFetch::Eof),
+            Ok(()) => return Ok(PartFetch::Data),
+            Err(e) => {
+                let msg = e.to_string();
+                tracing::warn!("[dl] part {} attempt {} error: {}", part_idx, attempt, msg);
+                if is_past_eof_error(&msg) {
+                    return Ok(PartFetch::Eof);
+                }
+                attempt += 1;
+                // Flood waits up to 3 s were already slept through inside rpc_call_with.
+                if MtProtoConnection::parse_flood_wait(&msg).is_some()
+                    || msg.contains("LOCATION_INVALID")
+                    || msg.contains("FILE_REFERENCE_EXPIRED")
+                    || attempt >= MAX_PART_ATTEMPTS
+                {
+                    return Err(e);
+                }
+                tokio::time::sleep(Duration::from_millis(50 * (1 << (attempt - 1)))).await;
+                if let Ok(new_conn) = MtProtoConnection::connect_with_auth(ctx.auth, ctx.api_id).await {
+                    *conn = new_conn;
+                }
+            }
+        }
+    }
+}
+
+/// One download connection: claims part indexes from the shared counter until EOF.
+async fn run_worker(ctx: Arc<WorkerCtx>, first_conn: Option<MtProtoConnection>) -> Result<(), Error> {
+    let mut conn = match first_conn {
+        Some(c) => c,
+        None => MtProtoConnection::connect_with_auth(ctx.auth, ctx.api_id).await?,
+    };
+    loop {
+        if ctx.eof_reached.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let part_idx = ctx.next_part.fetch_add(1, Ordering::Relaxed);
+        if part_idx >= MAX_DOWNLOAD_PARTS {
+            return Err(Error::new(ErrorKind::InvalidData, "Download exceeds the maximum supported file size"));
+        }
+        // Back-pressure: a chunk buffer is needed before asking the server for data.
+        let Ok(permit) = Arc::clone(&ctx.pool.permits).acquire_owned().await else {
+            return Ok(());
+        };
+        let mut buf = ctx.pool.take();
+        match fetch_part(&ctx, &mut conn, part_idx, &mut buf).await? {
+            PartFetch::Eof => {
+                ctx.eof_reached.store(true, Ordering::Relaxed);
+                ctx.pool.put(buf);
+                let marker = Chunk { part_idx, data: Vec::new(), is_last: true, _permit: permit };
+                let _ = ctx.tx.send(marker).await;
+                return Ok(());
+            }
+            PartFetch::Data => {
+                let is_last = buf.len() < CHUNK_SIZE;
+                if is_last {
+                    ctx.eof_reached.store(true, Ordering::Relaxed);
+                }
+                if ctx.tx.send(Chunk { part_idx, data: buf, is_last, _permit: permit }).await.is_err() {
+                    return Ok(()); // writer is gone; its error is reported by the caller
+                }
+                if is_last {
+                    return Ok(());
+                }
+            }
+        }
+    }
 }
 
 /// Downloads a large file (up to 2000 MB / 2 GB) directly from Telegram MTProto 2.0 servers
@@ -145,13 +383,14 @@ pub async fn download_large_file_via_mtproto(
     let q0 = build_get_file_query(&loc, 0, CHUNK_SIZE as i32);
     let mut refreshed_auth = false;
     let mut migrations = 0u32;
-    let resp0 = loop {
-        match main_conn.rpc_call(&q0).await {
-            Ok(r) => break r,
+    let mut flood_retries = 0u32;
+    let chunk0 = loop {
+        match main_conn.rpc_call_with(&q0, |body| parse_upload_file_chunk(body).map(<[u8]>::to_vec)).await {
+            Ok(c) => break c,
             Err(e) => {
                 let err_msg = e.to_string();
                 tracing::warn!("[dl] chunk0 error on dc={}: {}", main_conn.dc_id, err_msg);
-                if let Some(target_dc) = MtProtoConnection::parse_migrate_dc(&err_msg) {
+                if let Some(target_dc) = parse_migrate_dc(&err_msg) {
                     migrations += 1;
                     if migrations > 3 {
                         return Err(Error::other(format!("Too many DC migrations: {}", err_msg)));
@@ -160,15 +399,16 @@ pub async fn download_large_file_via_mtproto(
                     continue;
                 }
                 if let Some(wait_secs) = MtProtoConnection::parse_flood_wait(&err_msg) {
-                    if wait_secs <= 3 {
-                        tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+                    flood_retries += 1;
+                    if wait_secs <= 3 && flood_retries <= MAX_PART_ATTEMPTS {
+                        tokio::time::sleep(Duration::from_secs(wait_secs)).await;
                         continue;
                     }
                     tracing::warn!("[dl] dc={} flood wait {}s -> fast-fail (429)", main_conn.dc_id, wait_secs);
                     return Err(e);
                 }
                 // If cached auth failed or dropped connection, refresh authorization once
-                if !refreshed_auth && (is_auth_refresh_error(&err_msg)) {
+                if !refreshed_auth && is_auth_refresh_error(&err_msg) {
                     refreshed_auth = true;
                     // Refresh on the DC we are currently on (may differ from loc.dc_id after a migration)
                     let cur_dc = main_conn.dc_id;
@@ -181,7 +421,6 @@ pub async fn download_large_file_via_mtproto(
         }
     };
 
-    let chunk0 = parse_upload_file_chunk(&resp0)?;
     if chunk0.is_empty() {
         // Create an empty file at target destination
         OpenOptions::new()
@@ -193,172 +432,62 @@ pub async fn download_large_file_via_mtproto(
         return Ok((target_path, 0));
     }
 
-    let mut out_file = OpenOptions::new()
+    // From here on the `.part` file is removed on every exit path unless committed.
+    let mut part_guard = PartFileGuard { path: part_path.clone(), committed: false };
+    let out_file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
         .open(&part_path)
-        .await?;
-
-    out_file.write_all(&chunk0).await?;
+        .await?
+        .into_std()
+        .await;
+    let out_file = Arc::new(out_file);
+    {
+        let (file, first) = (Arc::clone(&out_file), chunk0.clone());
+        tokio::task::spawn_blocking(move || file.write_all_at(&first, 0)).await.map_err(Error::other)??;
+    }
 
     // If file is smaller than 512 KB, download is completely finished in 1 round trip!
     if chunk0.len() < CHUNK_SIZE {
-        out_file.flush().await?;
         drop(out_file);
         fs::rename(&part_path, &target_path).await?;
+        part_guard.committed = true;
         return Ok((target_path, chunk0.len() as u64));
     }
 
-    // 3. For files > 512 KB, extract the authenticated auth_key from main_conn
-        let shared_auth = main_conn.cached_auth();
-    drop(main_conn);
+    // 3. For files > 512 KB, share the authenticated auth_key with parallel worker connections.
+    let shared_auth = main_conn.cached_auth();
 
-    // 4. Multi-worker parallel download pipeline:
-    // Parallel TCP worker connections stream remaining 512 KB chunks at full network capacity.
-    // Chunks are transferred over an asynchronous mpsc channel to a dedicated async disk writer.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, Vec<u8>, bool)>(32);
+    // 4. Multi-worker parallel download pipeline: workers stream 512 KB chunks into pooled
+    // buffers and hand them to one disk writer; at most CHUNK_BUFFERS chunks exist at a time.
+    let pool = ChunkPool::new();
+    let (tx, rx) = mpsc::channel::<Chunk>(CHUNK_BUFFERS);
+    let writer = AbortOnDrop(tokio::spawn(run_writer(
+        Arc::clone(&out_file),
+        rx,
+        Arc::clone(&pool),
+        chunk0.len() as u64,
+    )));
+    drop(chunk0);
+    drop(out_file);
 
-    let writer_handle = tokio::spawn(async move {
-        let mut received_parts = std::collections::HashSet::new();
-        received_parts.insert(0); // part 0 is already written
-        let mut short_part: Option<usize> = None;
-        let mut min_empty_marker: Option<usize> = None;
-        let mut max_written_bytes = chunk0.len() as u64;
-        let mut final_total_bytes = None;
-
-        while let Some((part_idx, data, is_last)) = rx.recv().await {
-            if data.is_empty() {
-                // Empty EOF marker: part_idx is past EOF, so part_idx - 1 was the final part.
-                // Several workers may report markers out of order; keep the lowest.
-                min_empty_marker = Some(min_empty_marker.map_or(part_idx, |m| m.min(part_idx)));
-                continue;
-            }
-
-            let offset = (part_idx * CHUNK_SIZE) as u64;
-            out_file.seek(SeekFrom::Start(offset)).await?;
-            out_file.write_all(&data).await?;
-            received_parts.insert(part_idx);
-
-            let end_offset = offset + data.len() as u64;
-            if end_offset > max_written_bytes {
-                max_written_bytes = end_offset;
-            }
-
-            if is_last {
-                short_part = Some(part_idx);
-                final_total_bytes = Some(end_offset);
-            }
-        }
-
-        if let Some(last_idx) = final_part_index(short_part, min_empty_marker) {
-            // Contiguity verification: assert that every part from 0 to last_idx was received without gaps
-            for part in 0..=last_idx {
-                if !received_parts.contains(&part) {
-                    return Err(Error::new(
-                        ErrorKind::InvalidData,
-                        format!("Incomplete download: chunk {} missing from range 0..={}", part, last_idx),
-                    ));
-                }
-            }
-            let total_len = final_total_bytes.unwrap_or(max_written_bytes);
-            out_file.set_len(total_len).await?;
-            out_file.flush().await?;
-            Ok::<u64, Error>(total_len)
-        } else {
-            Err(Error::new(
-                ErrorKind::UnexpectedEof,
-                "Incomplete download: connection ended without reaching EOF",
-            ))
-        }
+    let ctx = Arc::new(WorkerCtx {
+        loc,
+        auth: shared_auth,
+        api_id,
+        next_part: AtomicUsize::new(1),
+        eof_reached: AtomicBool::new(false),
+        pool,
+        tx,
     });
-
-    let next_part = Arc::new(AtomicUsize::new(1));
-    let eof_reached = Arc::new(AtomicBool::new(false));
     let mut worker_set = tokio::task::JoinSet::new();
-
-    for _ in 0..NUM_DOWNLOAD_WORKERS {
-        let tx_clone = tx.clone();
-        let next_part_clone = Arc::clone(&next_part);
-        let eof_clone = Arc::clone(&eof_reached);
-        let loc_clone = loc.clone();
-
-        worker_set.spawn(async move {
-            let mut conn = MtProtoConnection::connect_with_auth(shared_auth, api_id).await?;
-            loop {
-                if eof_clone.load(Ordering::Relaxed) {
-                    break;
-                }
-                let part_idx = next_part_clone.fetch_add(1, Ordering::Relaxed);
-                let offset = (part_idx * CHUNK_SIZE) as i64;
-                let q = build_get_file_query(&loc_clone, offset, CHUNK_SIZE as i32);
-
-                let mut chunk_res = None;
-                for attempt in 0..5 {
-                    match conn.rpc_call(&q).await {
-                        Ok(r) => {
-                            chunk_res = Some(r);
-                            break;
-                        }
-                        Err(e) => {
-                            let msg = e.to_string();
-                            tracing::warn!("[dl] part {} attempt {} error: {}", part_idx, attempt, msg);
-                            if is_past_eof_error(&msg) {
-                                eof_clone.store(true, Ordering::Relaxed);
-                                let _ = tx_clone.send((part_idx, Vec::new(), true)).await;
-                                return Ok(());
-                            }
-                            if let Some(wait_secs) = MtProtoConnection::parse_flood_wait(&msg) {
-                                if wait_secs <= 3 {
-                                    tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
-                                    continue;
-                                }
-                                return Err(e);
-                            }
-                            if msg.contains("LOCATION_INVALID") || msg.contains("FILE_REFERENCE_EXPIRED") {
-                                return Err(e);
-                            }
-                            if attempt == 4 {
-                                return Err(e);
-                            }
-                            let backoff = std::time::Duration::from_millis(50 * (1 << attempt));
-                            tokio::time::sleep(backoff).await;
-                            if let Ok(new_c) = MtProtoConnection::connect_with_auth(shared_auth, api_id).await {
-                                conn = new_c;
-                            }
-                        }
-                    }
-                }
-
-                let resp = match chunk_res {
-                    Some(r) => r,
-                    None => break,
-                };
-
-                let chunk_data = parse_upload_file_chunk(&resp)?;
-                if chunk_data.is_empty() {
-                    eof_clone.store(true, Ordering::Relaxed);
-                    let _ = tx_clone.send((part_idx, Vec::new(), true)).await;
-                    break;
-                }
-
-                let len = chunk_data.len();
-                let is_last = len < CHUNK_SIZE;
-
-                if tx_clone.send((part_idx, chunk_data, is_last)).await.is_err() {
-                    break;
-                }
-
-                if is_last {
-                    eof_clone.store(true, Ordering::Relaxed);
-                    break;
-                }
-            }
-            Ok::<(), Error>(())
-        });
+    worker_set.spawn(run_worker(Arc::clone(&ctx), Some(main_conn)));
+    for _ in 1..NUM_DOWNLOAD_WORKERS {
+        worker_set.spawn(run_worker(Arc::clone(&ctx), None));
     }
-
-    drop(tx);
+    // The workers hold the only senders from here on, so the writer ends when they finish.
+    drop(ctx);
 
     // Fail fast: on the first worker error, abort the remaining workers immediately.
     let mut first_err = None;
@@ -382,26 +511,20 @@ pub async fn download_large_file_via_mtproto(
     }
 
     if let Some(e) = first_err {
-        writer_handle.abort();
-        let _ = writer_handle.await; // Cancelled is expected; ensures the file handle is closed
-        let _ = fs::remove_file(&part_path).await;
+        // `writer` (AbortOnDrop) and `part_guard` clean up on return.
         return Err(e);
     }
 
-    let total_downloaded = match writer_handle.await {
+    let mut writer = writer;
+    let total_downloaded = match (&mut writer.0).await {
         Ok(Ok(t)) => t,
-        Ok(Err(e)) => {
-            let _ = fs::remove_file(&part_path).await;
-            return Err(e);
-        }
-        Err(e) => {
-            let _ = fs::remove_file(&part_path).await;
-            return Err(Error::other(format!("Writer panicked: {e}")));
-        }
+        Ok(Err(e)) => return Err(e),
+        Err(e) => return Err(Error::other(format!("Writer panicked: {e}"))),
     };
 
     // Atomically move verified complete file to target destination
     fs::rename(&part_path, &target_path).await?;
+    part_guard.committed = true;
 
     let secs = t_start.elapsed().as_secs_f64().max(0.001);
     tracing::info!(
