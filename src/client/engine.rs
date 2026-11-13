@@ -1003,6 +1003,32 @@ impl TelegramEngine {
         })
     }
 
+    /// Asks the upstream Bot API to delete the cloud webhook (so getUpdates works); upstream
+    /// errors are returned as-is.
+    pub async fn delete_upstream_webhook(&self, token: &str, drop_pending_updates: bool) -> TelegramResult<()> {
+        let url = format!("{}/bot{token}/deleteWebhook", self.upstream_base_url);
+        let drop_param = if drop_pending_updates { "?drop_pending_updates=true" } else { "" };
+        let resp: ApiResponse<bool> = self
+            .client
+            .post(format!("{url}{drop_param}"))
+            .send()
+            .await
+            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
+            .json()
+            .await
+            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
+        if !resp.ok {
+            return Err(TelegramError::ApiError {
+                code: resp.error_code.unwrap_or(400),
+                description: resp
+                    .description
+                    .unwrap_or_else(|| "Failed to delete the upstream webhook".to_string()),
+                parameters: resp.parameters,
+            });
+        }
+        Ok(())
+    }
+
     /// Execute setWebhook from typed parameters. Locally delivered webhooks (local mode +
     /// private/loopback http URL) are stored and delivered by a local worker; every other webhook
     /// is proxied to the upstream Bot API (not stored, no local worker).
@@ -1044,26 +1070,7 @@ impl TelegramEngine {
         if is_local_url {
             // Ensure cloud webhook is deleted so local getUpdates worker can receive updates
             let drop_pending = req.drop_pending_updates.unwrap_or(false);
-            let del_url = format!("{}/bot{token}/deleteWebhook", self.upstream_base_url);
-            let drop_param = if drop_pending { "?drop_pending_updates=true" } else { "" };
-            let resp: ApiResponse<bool> = self
-                .client
-                .post(format!("{}{}", del_url, drop_param))
-                .send()
-                .await
-                .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
-                .json()
-                .await
-                .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
-            if !resp.ok {
-                return Err(TelegramError::ApiError {
-                    code: resp.error_code.unwrap_or(400),
-                    description: resp
-                        .description
-                        .unwrap_or_else(|| "Failed to delete the upstream webhook".to_string()),
-                    parameters: resp.parameters,
-                });
-            }
+            self.delete_upstream_webhook(token, drop_pending).await?;
 
             let max_conn = super::webhook::clamp_max_connections(
                 req.max_connections,
