@@ -971,12 +971,12 @@ pub async fn upload_and_send_large_file_typed(
     let next_part = Arc::new(AtomicUsize::new(0));
     let path_buf = file_path.to_path_buf();
 
-    let mut handles = Vec::with_capacity(num_workers);
+    let mut worker_set = tokio::task::JoinSet::new();
     for _worker_idx in 0..num_workers {
         let next_part_clone = Arc::clone(&next_part);
         let path_clone = path_buf.clone();
 
-        handles.push(tokio::spawn(async move {
+        worker_set.spawn(async move {
             // Share the already-authorized auth_key with a unique session_id (zero extra DH handshakes or auth calls!)
             let mut worker_conn = MtProtoConnection::connect_with_auth(shared_auth, api_id).await?;
             let mut file = File::open(&path_clone).await?;
@@ -1051,31 +1051,29 @@ pub async fn upload_and_send_large_file_typed(
             }
 
             Ok::<(), Error>(())
-        }));
+        });
     }
 
     // Fail fast: on the first worker error, abort the remaining workers instead of letting
     // them keep uploading parts of a doomed file.
     let mut first_err: Option<Error> = None;
-    for (idx, h) in handles.iter_mut().enumerate() {
-        match h.await {
+    while let Some(joined) = worker_set.join_next().await {
+        match joined {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                first_err = Some(e);
-            }
+            Ok(Err(e)) => first_err = Some(e),
+            Err(e) if e.is_cancelled() => {}
             Err(e) => {
                 first_err = Some(Error::new(ErrorKind::Other, format!("Upload worker panicked: {}", e)));
             }
         }
         if first_err.is_some() {
-            tracing::error!("[upload] worker {} failed, aborting remaining workers", idx);
+            tracing::error!("[upload] a worker failed, aborting remaining workers");
+            worker_set.abort_all();
+            while worker_set.join_next().await.is_some() {}
             break;
         }
     }
     if let Some(e) = first_err {
-        for h in &handles {
-            h.abort();
-        }
         return Err(e);
     }
 
