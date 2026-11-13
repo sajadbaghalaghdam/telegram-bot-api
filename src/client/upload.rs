@@ -14,19 +14,32 @@ use crate::error::{TelegramError, TelegramResult};
 use crate::models::File;
 use crate::mtproto::{MediaAttrs, MediaKind};
 
+/// One large-file upload request (send* method with a local file > 49 MB).
+pub struct LargeUpload<'a> {
+    pub token: &'a str,
+    pub method: &'a str,
+    pub chat_id: &'a str,
+    pub path: &'a Path,
+    pub caption: &'a str,
+    /// File name to report instead of the path's own (set for temp files).
+    pub file_name: Option<&'a str>,
+    /// The other request parameters, echoed into the answer and read for media attributes.
+    pub extra_fields: Option<&'a serde_json::Map<String, Value>>,
+}
+
 impl TelegramEngine {
     /// Uploads a large local file (> 50 MB up to 2000 MB) directly to Telegram DC via Pure-Rust MTProto 2.0
     /// (`upload.saveBigFilePart` + `messages.sendMedia`), returning a Bot API `Message` JSON payload.
-    pub async fn upload_local_file_mtproto(
-        &self,
-        token: &str,
-        method: &str,
-        chat_id_str: &str,
-        local_path: &Path,
-        caption: &str,
-        custom_file_name: Option<&str>,
-        extra_fields: Option<&serde_json::Map<String, Value>>,
-    ) -> TelegramResult<Bytes> {
+    pub async fn upload_local_file_mtproto(&self, up: LargeUpload<'_>) -> TelegramResult<Bytes> {
+        let LargeUpload {
+            token,
+            method,
+            chat_id: chat_id_str,
+            path: local_path,
+            caption,
+            file_name: custom_file_name,
+            extra_fields,
+        } = up;
         if self.api_id <= 0 || self.api_hash.is_empty() {
             return Err(TelegramError::Internal(
                 "MTProto large file upload requires valid --api-id and --api-hash".to_string(),
@@ -204,15 +217,15 @@ impl TelegramEngine {
         drop(writer);
 
         let res = self
-            .upload_local_file_mtproto(
+            .upload_local_file_mtproto(LargeUpload {
                 token,
                 method,
-                chat_id_str,
-                &temp_path,
+                chat_id: chat_id_str,
+                path: &temp_path,
                 caption,
-                Some(&url_file_name),
-                None,
-            )
+                file_name: Some(&url_file_name),
+                extra_fields: None,
+            })
             .await;
         let _ = fs::remove_file(&temp_path).await;
         Some(res)

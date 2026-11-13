@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use tokio::io::AsyncWriteExt;
+use crate::client::upload::LargeUpload;
 use crate::error::{TelegramError, TelegramResult};
 use crate::server::AppState;
 
@@ -155,15 +156,15 @@ pub async fn generic_post_handler(
         if has_temp_file {
             let res = state
                 .engine
-                .upload_local_file_mtproto(
-                    clean_token,
-                    &method,
-                    &chat_id_str,
-                    &temp_path,
-                    &caption,
-                    orig_file_name.as_deref(),
-                    Some(&extra_fields),
-                )
+                .upload_local_file_mtproto(LargeUpload {
+                    token: clean_token,
+                    method: &method,
+                    chat_id: &chat_id_str,
+                    path: &temp_path,
+                    caption: &caption,
+                    file_name: orig_file_name.as_deref(),
+                    extra_fields: Some(&extra_fields),
+                })
                 .await;
             let _ = tokio::fs::remove_file(&temp_path).await;
             let out = res?;
