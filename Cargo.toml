@@ -6,7 +6,6 @@ authors = ["Sajjad Aghdam <34358062+sajadbaghalaghdam@users.noreply.github.com>"
 description = "High-performance, ultra-low memory Telegram Bot API Server written in 100% pure Rust with native MTProto 2.0 streaming (up to 2000 MB)."
 license = "MIT"
 repository = "https://github.com/sajadbaghalaghdam/telegram-bot-api"
-homepage = "https://github.com/sajadbaghalaghdam/telegram-bot-api"
 keywords = ["telegram", "bot-api", "rust", "mtproto", "tokio"]
 categories = ["network-programming", "web-programming::http-server", "command-line-utilities"]
 
@@ -28,8 +27,6 @@ sha1 = "0.10"
 sha2 = "0.10"
 aes = "0.8"
 num-bigint = { version = "0.4", features = ["rand"] }
-num-traits = "0.2"
-rsa = "0.9"
 rusqlite = { version = "0.32", features = ["bundled"] }
 dashmap = "6.1"
 
