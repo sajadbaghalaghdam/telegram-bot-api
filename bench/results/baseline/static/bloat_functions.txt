@@ -1,0 +1,36 @@
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.09s
+    Analyzing /work/repo/bench/.build/target/release/telegram-bot-api-rs
+
+ File  .text    Size               Crate Name
+ 0.2%   1.2% 67.5KiB telegram_bot_api_rs telegram_bot_api_rs::async_main::{closure#0}
+ 0.1%   0.9% 51.7KiB           [Unknown] sqlite3VdbeExec
+ 0.1%   0.9% 51.2KiB telegram_bot_api_rs <telegram_bot_api_rs::client::engine::TelegramEngine>::universal_call_inner::{closure#0}
+ 0.1%   0.5% 28.1KiB                axum axum::serve::handle_connection::<tokio::net::tcp::listener::TcpListener, axum::routing::Router, axum::routing::Router>::{closure#0}::{closure#3}
+ 0.1%   0.5% 27.9KiB telegram_bot_api_rs telegram_bot_api_rs::client::webhook::run_worker::{closure#0}
+ 0.1%   0.5% 26.9KiB        clap_builder <clap_builder::parser::parser::Parser>::get_matches_with
+ 0.1%   0.5% 26.1KiB          hyper_util <hyper_util::client::legacy::client::Client<reqwest::connect::Connector, reqwest::async_impl::body::Body>>::send_request::{closure#0}
+ 0.1%   0.4% 25.2KiB         encoding_rs <encoding_rs::variant::VariantDecoder>::decode_to_utf8_raw
+ 0.1%   0.4% 24.7KiB telegram_bot_api_rs <telegram_bot_api_rs::config::ServerConfig as clap_builder::derive::Args>::augment_args
+ 0.1%   0.4% 24.5KiB           [Unknown] sqlite3Pragma
+ 0.1%   0.4% 24.2KiB           [Unknown] yy_reduce.isra.0
+ 0.1%   0.4% 24.0KiB              rustls <rustls::client::tls13::ExpectFinished as rustls::common_state::State<rustls::client::client_conn::ClientConnectionData>>::handle
+ 0.1%   0.4% 22.1KiB                ring ring_core_0_17_14__x25519_ge_frombytes_vartime
+ 0.0%   0.4% 20.8KiB           [Unknown] sqlite3WhereCodeOneLoopStart
+ 0.0%   0.3% 19.5KiB      regex_automata <regex_automata::nfa::thompson::compiler::Compiler>::c
+ 0.0%   0.3% 19.5KiB telegram_bot_api_rs telegram_bot_api_rs::handlers::generic::generic_post_handler::{closure#0}
+ 0.0%   0.3% 19.0KiB telegram_bot_api_rs <telegram_bot_api_rs::client::engine::TelegramEngine>::upload_local_file_mtproto::{closure#0}
+ 0.0%   0.3% 18.9KiB telegram_bot_api_rs <telegram_bot_api_rs::client::engine::TelegramEngine>::get_file::{closure#0}
+ 0.0%   0.3% 18.9KiB           [Unknown] fe_loose_invert
+ 0.0%   0.3% 18.3KiB           [Unknown] sqlite3Select
+ 0.0%   0.3% 18.2KiB           [Unknown] multiSelect
+ 0.0%   0.3% 18.2KiB        futures_util <futures_util::future::future::Map<futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>, <hyper_util::client::legacy::client::Client<reqwest::connect::Connector, reqwest::async_impl::body::Body>>::connect_to::{closure#0}::{closure#1}::{closure#0}::{closure#0}>, <hyper_util::client::legacy::client::Client<reqwest::connect::Connector, reqwest::async_impl::body::Body>>::connect_to::{closure#0}::{closure#1}::{closure#0}::{closure#1}> as core::future::future::Future>::poll
+ 0.0%   0.3% 17.5KiB telegram_bot_api_rs telegram_bot_api_rs::mtproto::downloader::download_large_file_via_mtproto::{closure#0}
+ 0.0%   0.3% 17.2KiB telegram_bot_api_rs telegram_bot_api_rs::mtproto::uploader::upload_and_send_large_file_typed::{closure#0}
+ 0.0%   0.3% 16.8KiB                 std <std::backtrace_rs::symbolize::gimli::Cache>::with_global::<std::backtrace_rs::symbolize::gimli::resolve::{closure#1}>
+ 0.0%   0.3% 16.8KiB           [Unknown] sqlite3Update.constprop.0
+ 0.0%   0.3% 16.7KiB      regex_automata <regex_automata::nfa::thompson::compiler::Compiler>::build_many::<&str>
+ 0.0%   0.3% 16.5KiB telegram_bot_api_rs telegram_bot_api_rs::client::webhook::run_queue::{closure#0}
+ 0.0%   0.3% 16.3KiB              rustls rustls::client::hs::emit_client_hello_for_retry
+ 0.0%   0.3% 16.2KiB             reqwest <reqwest::async_impl::client::ClientBuilder>::build
+11.5%  86.3%  4.8MiB                     And 7248 smaller methods. Use -n N to show more.
+13.3% 100.0%  5.6MiB                     .text section size, the file size is 42.1MiB

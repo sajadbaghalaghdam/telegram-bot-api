@@ -1,0 +1,12 @@
+warnings_total 91
+clippy::collapsible_if 54
+clippy::io_other_error 11
+clippy::manual_is_multiple_of 9
+clippy::chunks_exact_to_as_chunks 4
+clippy::too_many_arguments 3
+clippy::manual_repeat_n 3
+clippy::needless_borrows_for_generic_args 2
+clippy::manual_div_ceil 2
+clippy::manual_range_contains 1
+clippy::bool_comparison 1
+clippy::op_ref 1

@@ -1,0 +1,50 @@
+ 9.23% 1.00% [.] _int_free_chunk - - 
+ 8.12% 0.81% [.] __libc_malloc2 - - 
+ 7.65% 0.07% [.] __lll_lock_wake_private - - 
+ 4.80% 0.15% [.] __lll_lock_wait_private - - 
+ 3.37% 2.94% [.] _int_malloc - - 
+ 2.59% 2.25% [.] _int_free_merge_chunk - - 
+ 2.16% 2.15% [.] malloc - - 
+ 1.95% 0.00% [.] _int_free_create_chunk (inlined) - - 
+ 1.40% 1.40% [.] <hyper_util::client::legacy::client::Client<reqwest::connect::Connector, reqwest::async_impl::body::Body>>::send_request::{closure#0} - - 
+ 1.08% 1.08% [.] axum::serve::handle_connection::<tokio::net::tcp::listener::TcpListener, axum::routing::Router, axum::routing::Router>::{closure#0}::{closure#3} - - 
+ 1.03% 1.03% [.] <axum::middleware::from_fn::FromFn<telegram_bot_api_rs::server::telemetry_middleware, telegram_bot_api_rs::server::AppState, axum::routing::route::Route, (axum::extract::state::State<telegram_bot_api_rs:
+ 0.70% 0.70% [.] <futures_util::future::future::Map<futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>, <
+ 0.70% 0.70% [.] tokio::runtime::task::raw::poll::<tokio::runtime::blocking::task::BlockingTask<<tokio::runtime::scheduler::multi_thread::worker::Launch>::launch::{closure#0}>, tokio::runtime::blocking::schedule::Blockin
+ 0.69% 0.69% [.] <reqwest::async_impl::request::RequestBuilder>::send - - 
+ 0.66% 0.66% [.] <hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper_util::service::glue::TowerToHyperService<tower::util::map_request::MapRequest<axum::routing::Router, axum::serve::handle_c
+ 0.64% 0.64% [.] <url::parser::Parser>::parse_path - - 
+ 0.60% 0.60% [.] <url::parser::Parser>::after_double_slash - - 
+ 0.59% 0.59% [.] <url::host::Host<alloc::borrow::Cow<str>>>::parse_cow - - 
+ 0.53% 0.53% [.] telegram_bot_api_rs::handlers::generic::generic_post_handler::{closure#0} - - 
+ 0.53% 0.53% [.] core::ptr::drop_glue::<telegram_bot_api_rs::server::AppState> - - 
+ 0.45% 0.45% [.] <tokio::runtime::io::registration::Registration>::poll_ready - - 
+ 0.45% 0.45% [.] <serde_json::value::Value as serde_core::de::Deserialize>::deserialize::<&mut serde_json::de::Deserializer<serde_json::read::SliceRead>> - - 
+ 0.42% 0.42% [.] <tokio::time::sleep::Sleep as core::future::future::Future>::poll - - 
+ 0.42% 0.42% [.] <hyper_util::client::legacy::pool::Checkout<hyper_util::client::legacy::client::PoolClient<reqwest::async_impl::body::Body>, (http::uri::scheme::Scheme, http::uri::authority::Authority)> as core::future:
+ 0.41% 0.41% [.] axum::serve::handle_connection::<tokio::net::tcp::listener::TcpListener, axum::routing::Router, axum::routing::Router>::{closure#0}::{closure#3} - - 
+ 0.40% 0.40% [.] <telegram_bot_api_rs::handlers::generic::generic_post_handler as axum::handler::Handler<(axum_core::extract::private::ViaRequest, axum::extract::path::Path<(alloc::string::String, alloc::string::String)>
+ 0.38% 0.38% [.] <axum::routing::route::RouteFuture<!> as core::future::future::Future>::poll - - 
+ 0.38% 0.38% [.] <telegram_bot_api_rs::client::engine::TelegramEngine>::universal_call_inner::{closure#0} - - 
+ 0.37% 0.37% [.] core::ptr::drop_glue::<hyper_util::client::legacy::pool::Pooled<hyper_util::client::legacy::client::PoolClient<reqwest::async_impl::body::Body>, (http::uri::scheme::Scheme, http::uri::authority::Authorit
+ 0.37% 0.37% [.] <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task - - 
+ 0.36% 0.36% [.] <hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server>>::write_head - -
+ 0.34% 0.34% [.] <reqwest::connect::Connector as core::clone::Clone>::clone - - 
+ 0.34% 0.08% [.] kmalloc_reserve - - 
+ 0.33% 0.33% [.] <serde_json::read::SliceRead as serde_json::read::Read>::parse_str - - 
+ 0.33% 0.33% [.] <hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, reqwest::connect::sealed::Conn, hyper::proto::h1::role::Clien
+ 0.32% 0.32% [.] <reqwest::async_impl::client::Pending as core::future::future::Future>::poll - - 
+ 0.32% 0.32% [.] tokio::runtime::task::raw::poll::<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::
+ 0.31% 0.31% [.] <tokio::runtime::time::handle::Handle>::reregister - - 
+ 0.30% 0.30% [.] <telegram_bot_api_rs::client::engine::TelegramEngine>::universal_call::{closure#0} - - 
+ 0.30% 0.30% [.] <serde_json::read::SliceRead>::skip_to_escape - - 
+ 0.30% 0.30% [.] <hyper::body::incoming::Incoming as http_body::Body>::poll_frame - - 
+ 0.29% 0.29% [.] <url::ParseOptions>::parse - - 
+ 0.27% 0.27% [.] <hyper::proto::h1::io::Buffered<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::encode::EncodedBuf<bytes::bytes::Bytes>>>::poll_f
+ 0.27% 0.27% [.] <tower::util::map_future::MapFuture<axum::util::MapIntoResponse<axum::handler::service::HandlerService<telegram_bot_api_rs::handlers::generic::generic_post_handler, (axum_core::extract::private::ViaReque
+ 0.24% 0.24% [.] <alloc::collections::btree::map::IntoIter<alloc::string::String, serde_json::value::Value>>::dying_next - - 
+ 0.24% 0.24% [.] <tokio::sync::mpsc::list::Rx<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>>>::pop - - 
+ 0.23% 0.23% [.] <url::parser::Parser>::parse_path::push_pending - - 
+ 0.23% 0.23% [.] <hyper::proto::h1::conn::Conn<reqwest::connect::sealed::Conn, bytes::bytes::Bytes, hyper::proto::h1::role::Client>>::write_head - - 
+ 0.21% 0.21% [.] core::ptr::drop_glue::<reqwest::connect::ConnectorService> - - 
+ 0.21% 0.21% [.] <alloc::collections::vec_deque::iter::Iter<hyper::proto::h1::encode::EncodedBuf<bytes::bytes::Bytes>> as core::iter::traits::iterator::Iterator>::fold::<usize, core::iter::adapters::map::map_fold<&hyper:

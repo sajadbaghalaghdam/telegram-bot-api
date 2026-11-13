@@ -1,0 +1,600 @@
+ 46.06% 0.21% [.] entry_SYSCALL_64_after_hwframe - - 
+ 45.80% 0.40% [.] do_syscall_64 - - 
+ 42.97% 0.12% [.] x64_sys_call - - 
+ 33.26% 0.16% [.] __syscall_cancel - - 
+ 33.14% 0.03% [.] __syscall_cancel_arch_end - - 
+ 32.33% 0.00% [.] __internal_syscall_cancel (inlined) - - 
+ 27.95% 0.02% [.] __GI___writev - - 
+ 26.47% 0.04% [.] __x64_sys_writev - - 
+ 26.40% 0.07% [.] do_writev - - 
+ 26.02% 0.34% [.] vfs_writev - - 
+ 25.13% 0.19% [.] sock_write_iter - - 
+ 25.13% 0.03% [.] do_iter_readv_writev - - 
+ 24.56% 0.12% [.] inet_sendmsg - - 
+ 24.38% 0.08% [.] tcp_sendmsg - - 
+ 23.84% 0.37% [.] tcp_sendmsg_locked - - 
+ 20.94% 0.07% [.] tcp_push - - 
+ 20.88% 0.07% [.] __tcp_push_pending_frames - - 
+ 20.65% 0.28% [.] tcp_write_xmit - - 
+ 19.41% 0.39% [.] __tcp_transmit_skb - - 
+ 18.85% 0.07% [.] ip_queue_xmit - - 
+ 18.64% 0.13% [.] __ip_queue_xmit - - 
+ 18.45% 0.07% [.] ip_local_out - - 
+ 15.25% 0.15% [.] ip_output - - 
+ 14.73% 0.09% [.] ip_finish_output - - 
+ 14.61% 0.04% [.] __ip_finish_output - - 
+ 14.48% 0.23% [.] ip_finish_output2 - - 
+ 14.23% 0.03% [.] neigh_hh_output - - 
+ 14.19% 0.29% [.] __dev_queue_xmit - - 
+ 12.85% 0.11% [.] __local_bh_enable_ip - - 
+ 12.81% 0.10% [.] handle_softirqs - - 
+ 12.80% 0.11% [.] do_softirq.part.0 - - 
+ 12.68% 0.00% [.] __do_softirq - - 
+ 12.49% 0.23% [.] net_rx_action - - 
+ 11.74% 0.09% [.] __x64_sys_futex - - 
+ 11.66% 0.07% [.] do_futex - - 
+ 11.34% 0.05% [.] __napi_poll - - 
+ 11.20% 0.13% [.] process_backlog - - 
+ 11.06% 0.08% [.] __netif_receive_skb - - 
+ 10.93% 0.05% [.] __netif_receive_skb_one_core - - 
+ 10.73% 0.14% [.] ip_rcv - - 
+ 10.23% 0.04% [.] ip_local_deliver - - 
+ 9.95% 0.06% [.] ip_local_deliver_finish - - 
+ 9.67% 0.08% [.] ip_protocol_deliver_rcu - - 
+ 9.31% 0.37% [.] tcp_v4_rcv - - 
+ 9.23% 1.00% [.] _int_free_chunk - - 
+ 8.42% 0.22% [.] try_to_wake_up - - 
+ 8.12% 0.81% [.] __libc_malloc2 - - 
+ 7.98% 0.02% [.] tcp_v4_do_rcv - - 
+ 7.76% 0.52% [.] tcp_rcv_established - - 
+ 7.65% 0.07% [.] __lll_lock_wake_private - - 
+ 6.80% 0.47% [.] futex_wake - - 
+ 5.50% 0.08% [.] schedule - - 
+ 5.46% 0.03% [.] wake_up_q - - 
+ 5.40% 0.21% [.] __schedule - - 
+ 4.80% 0.15% [.] __lll_lock_wait_private - - 
+ 4.71% 0.10% [.] futex_wait - - 
+ 4.67% 0.00% [.] futex_wait (inlined) - - 
+ 4.64% 0.03% [.] recv - - 
+ 4.63% 0.16% [.] __futex_wait - - 
+ 4.55% 4.55% [k] native_queued_spin_lock_slowpath - - 
+ 4.47% 0.05% [.] tcp_data_ready - - 
+ 4.37% 0.08% [.] sock_def_readable - - 
+ 4.31% 0.10% [.] __wake_up_sync_key - - 
+ 4.18% 0.01% [.] raw_spin_rq_lock_nested.constprop.0 - - 
+ 4.06% 0.03% [.] ___task_rq_lock - - 
+ 3.97% 0.21% [.] __wake_up_common - - 
+ 3.97% 0.07% [.] __x64_sys_recvfrom - - 
+ 3.96% 0.57% [.] realloc - - 
+ 3.93% 0.35% [.] ep_poll_callback - - 
+ 3.74% 0.18% [.] __sys_recvfrom - - 
+ 3.51% 0.03% [.] futex_do_wait - - 
+ 3.37% 2.94% [.] _int_malloc - - 
+ 3.33% 0.07% [.] sock_recvmsg - - 
+ 3.19% 0.31% [.] nf_hook_slow - - 
+ 3.17% 0.02% [.] __wake_up_sync - - 
+ 3.05% 0.03% [.] ep_autoremove_wake_function - - 
+ 3.05% 0.04% [.] inet_recvmsg - - 
+ 3.02% 0.05% [.] __ip_local_out - - 
+ 3.01% 0.02% [.] default_wake_function - - 
+ 3.00% 0.15% [.] tcp_recvmsg - - 
+ 2.59% 2.25% [.] _int_free_merge_chunk - - 
+ 2.36% 0.51% [.] tcp_recvmsg_locked - - 
+ 2.16% 2.15% [.] malloc - - 
+ 2.12% 0.04% [.] prepare_task_switch - - 
+ 2.07% 0.01% [.] __perf_event_task_sched_out - - 
+ 2.06% 0.01% [.] x86_pmu_disable - - 
+ 2.04% 0.05% [.] perf_event_context_sched_out - - 
+ 2.01% 0.00% [.] amd_pmu_disable_all - - 
+ 1.99% 1.99% [.] cfree@GLIBC_2.2.5 - - 
+ 1.97% 0.10% [.] perf_ctx_disable - - 
+ 1.95% 0.00% [.] _int_free_create_chunk (inlined) - - 
+ 1.93% 0.01% [.] exit_to_user_mode_loop - - 
+ 1.82% 0.05% [.] enqueue_task - - 
+ 1.77% 1.77% [k] native_write_msr - - 
+ 1.75% 0.02% [.] ttwu_do_activate - - 
+ 1.64% 0.38% [.] tcp_ack - - 
+ 1.45% 0.00% [.] tcache_get (inlined) - - 
+ 1.45% 0.00% [.] tcache_get_n (inlined) - - 
+ 1.44% 0.12% [.] ipv4_conntrack_local - - 
+ 1.40% 1.40% [.] <hyper_util::client::legacy::client::Client<reqwest::connect::Connector, reqwest::async_impl::body::Body>>::send_request::{closure#0} - - 
+ 1.37% 0.30% [k] nf_conntrack_in - - 
+ 1.34% 0.13% [.] _int_realloc - - 
+ 1.32% 0.02% [.] syscall - - 
+ 1.31% 0.02% [.] pick_next_task - - 
+ 1.29% 0.46% [k] enqueue_task_fair - - 
+ 1.27% 0.02% [.] tcp_stream_alloc_skb - - 
+ 1.27% 0.04% [.] asm_sysvec_apic_timer_interrupt - - 
+ 1.23% 0.08% [.] __pick_next_task - - 
+ 1.23% 0.03% [.] sysvec_apic_timer_interrupt - - 
+ 1.13% 0.09% [.] skb_copy_datagram_iter - - 
+ 1.08% 1.08% [.] axum::serve::handle_connection::<tokio::net::tcp::listener::TcpListener, axum::routing::Router, axum::routing::Router>::{closure#0}::{closure#3} - - 
+ 1.07% 0.12% [.] pick_next_task_fair - - 
+ 1.05% 1.05% [k] native_read_msr - - 
+ 1.04% 0.37% [.] __skb_datagram_iter - - 
+ 1.03% 1.03% [.] <axum::middleware::from_fn::FromFn<telegram_bot_api_rs::server::telemetry_middleware, telegram_bot_api_rs::server::AppState, axum::routing::route::Route, (axum::extract::state::State<telegram_bot_api_rs:
+ 1.01% 0.13% [.] nft_do_chain_inet - - 
+ 1.00% 0.51% [k] tcp_clean_rtx_queue - - 
+ 1.00% 0.98% [.] __memmove_avx_unaligned_erms - - 
+ 0.91% 0.09% [k] ttwu_queue_wakelist - - 
+ 0.90% 0.34% [.] futex_wait_setup - - 
+ 0.89% 0.25% [.] __alloc_skb - - 
+ 0.88% 0.00% [.] __internal_syscall_cancel (inlined) - - 
+ 0.87% 0.01% [.] hrtimer_interrupt - - 
+ 0.87% 0.00% [.] __sysvec_apic_timer_interrupt - - 
+ 0.85% 0.09% [.] dequeue_entities - - 
+ 0.84% 0.46% [k] nft_do_chain - - 
+ 0.83% 0.23% [.] skb_defer_free_flush - - 
+ 0.82% 0.02% [.] try_to_block_task.constprop.0.isra.0 - - 
+ 0.80% 0.04% [.] __smp_call_single_queue - - 
+ 0.80% 0.01% [.] __hrtimer_run_queues - - 
+ 0.79% 0.04% [.] dequeue_task - - 
+ 0.77% 0.06% [.] dequeue_task_fair - - 
+ 0.75% 0.15% [.] __check_object_size - - 
+ 0.74% 0.01% [.] skb_do_copy_data_nocache - - 
+ 0.74% 0.04% [.] dev_hard_start_xmit - - 
+ 0.72% 0.01% [.] tick_nohz_handler - - 
+ 0.72% 0.30% [.] pick_task_fair - - 
+ 0.70% 0.70% [.] <futures_util::future::future::Map<futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>, <
+ 0.70% 0.70% [.] tokio::runtime::task::raw::poll::<tokio::runtime::blocking::task::BlockingTask<<tokio::runtime::scheduler::multi_thread::worker::Launch>::launch::{closure#0}>, tokio::runtime::blocking::schedule::Blockin
+ 0.69% 0.69% [.] <reqwest::async_impl::request::RequestBuilder>::send - - 
+ 0.69% 0.27% [.] dequeue_entity - - 
+ 0.69% 0.01% [.] native_send_call_func_single_ipi - - 
+ 0.69% 0.03% [.] update_process_times - - 
+ 0.67% 0.00% [.] epoll_wait - - 
+ 0.66% 0.66% [.] unlink_chunk.isra.0 - - 
+ 0.66% 0.66% [.] <hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper_util::service::glue::TowerToHyperService<tower::util::map_request::MapRequest<axum::routing::Router, axum::serve::handle_c
+ 0.66% 0.02% [.] xmit_one.constprop.0 - - 
+ 0.65% 0.00% [.] simple_copy_to_iter - - 
+ 0.65% 0.02% [.] _raw_spin_lock_irqsave - - 
+ 0.64% 0.01% [k] do_epoll_wait - - 
+ 0.64% 0.64% [.] <url::parser::Parser>::parse_path - - 
+ 0.63% 0.00% [.] __x64_sys_epoll_wait - - 
+ 0.63% 0.61% [.] __memmove_avx_unaligned - - 
+ 0.60% 0.42% [k] skb_release_data - - 
+ 0.60% 0.60% [.] <url::parser::Parser>::after_double_slash - - 
+ 0.59% 0.15% [.] resolve_normal_ct - - 
+ 0.59% 0.59% [.] <url::host::Host<alloc::borrow::Cow<str>>>::parse_cow - - 
+ 0.59% 0.01% [k] ep_poll - - 
+ 0.59% 0.10% [.] napi_consume_skb - - 
+ 0.57% 0.02% [.] sched_tick - - 
+ 0.56% 0.02% [.] mod_timer - - 
+ 0.56% 0.28% [k] update_curr - - 
+ 0.55% 0.55% [k] __raw_spin_lock_irqsave - - 
+ 0.55% 0.01% [.] sk_reset_timer - - 
+ 0.53% 0.02% [.] ep_send_events - - 
+ 0.53% 0.53% [.] telegram_bot_api_rs::handlers::generic::generic_post_handler::{closure#0} - - 
+ 0.53% 0.10% [.] select_task_rq - - 
+ 0.53% 0.53% [.] core::ptr::drop_glue::<telegram_bot_api_rs::server::AppState> - - 
+ 0.52% 0.51% [.] __inet_lookup_established - - 
+ 0.49% 0.09% [.] tcp_send_delayed_ack - - 
+ 0.48% 0.25% [.] nf_conntrack_tcp_packet - - 
+ 0.48% 0.04% [.] finish_task_switch.isra.0 - - 
+ 0.48% 0.22% [.] ep_deliver_event - - 
+ 0.47% 0.01% [.] __tcp_ack_snd_check - - 
+ 0.46% 0.12% [.] loopback_xmit - - 
+ 0.45% 0.45% [.] <tokio::runtime::io::registration::Registration>::poll_ready - - 
+ 0.45% 0.45% [.] <serde_json::value::Value as serde_core::de::Deserialize>::deserialize::<&mut serde_json::de::Deserializer<serde_json::read::SliceRead>> - - 
+ 0.44% 0.06% [.] clock_gettime@@GLIBC_2.17 - - 
+ 0.43% 0.12% [.] select_task_rq_fair - - 
+ 0.42% 0.42% [.] <tokio::time::sleep::Sleep as core::future::future::Future>::poll - - 
+ 0.42% 0.42% [.] <hyper_util::client::legacy::pool::Checkout<hyper_util::client::legacy::client::PoolClient<reqwest::async_impl::body::Body>, (http::uri::scheme::Scheme, http::uri::authority::Authority)> as core::future:
+ 0.42% 0.18% [.] check_heap_object - - 
+ 0.42% 0.05% [k] enqueue_entity - - 
+ 0.41% 0.27% [k] arch_exit_to_user_mode_prepare.isra.0 - - 
+ 0.41% 0.41% [.] axum::serve::handle_connection::<tokio::net::tcp::listener::TcpListener, axum::routing::Router, axum::routing::Router>::{closure#0}::{closure#3} - - 
+ 0.40% 0.40% [.] <telegram_bot_api_rs::handlers::generic::generic_post_handler as axum::handler::Handler<(axum_core::extract::private::ViaRequest, axum::extract::path::Path<(alloc::string::String, alloc::string::String)>
+ 0.40% 0.40% [k] psi_group_change - - 
+ 0.40% 0.10% [.] rw_verify_area - - 
+ 0.39% 0.15% [.] __mod_timer - - 
+ 0.39% 0.39% [k] entry_SYSCALL_64 - - 
+ 0.39% 0.09% [.] expr_call_ops_eval - - 
+ 0.38% 0.38% [.] <axum::routing::route::RouteFuture<!> as core::future::future::Future>::poll - - 
+ 0.38% 0.38% [k] rep_movs_alternative - - 
+ 0.38% 0.38% [.] <telegram_bot_api_rs::client::engine::TelegramEngine>::universal_call_inner::{closure#0} - - 
+ 0.37% 0.37% [.] core::ptr::drop_glue::<hyper_util::client::legacy::pool::Pooled<hyper_util::client::legacy::client::PoolClient<reqwest::async_impl::body::Body>, (http::uri::scheme::Scheme, http::uri::authority::Authorit
+ 0.37% 0.37% [.] <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task - - 
+ 0.36% 0.08% [.] psi_task_change - - 
+ 0.36% 0.36% [.] core::str::converts::from_utf8 - - 
+ 0.36% 0.36% [.] <hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server>>::write_head - -
+ 0.35% 0.35% [.] <http::header::map::HeaderMap>::try_append2::<http::header::name::HeaderName> - - 
+ 0.35% 0.35% [k] skb_attempt_defer_free - - 
+ 0.35% 0.01% [.] x86_pmu_enable - - 
+ 0.35% 0.01% [.] __perf_event_task_sched_in - - 
+ 0.35% 0.02% [.] __kfree_skb - - 
+ 0.34% 0.05% [.] __amd_pmu_enable_all - - 
+ 0.34% 0.00% [.] amd_pmu_enable_all - - 
+ 0.34% 0.05% [.] wakeup_preempt - - 
+ 0.34% 0.34% [.] <reqwest::connect::Connector as core::clone::Clone>::clone - - 
+ 0.34% 0.06% [.] sk_forced_mem_schedule - - 
+ 0.34% 0.08% [.] kmalloc_reserve - - 
+ 0.34% 0.01% [.] perf_ctx_enable - - 
+ 0.33% 0.33% [k] fdget - - 
+ 0.33% 0.33% [.] <idna::uts46::Uts46>::process_innermost - - 
+ 0.33% 0.33% [k] __rcu_read_lock - - 
+ 0.33% 0.33% [.] <serde_json::read::SliceRead as serde_json::read::Read>::parse_str - - 
+ 0.33% 0.13% [.] sock_rfree - - 
+ 0.33% 0.24% [k] update_load_avg - - 
+ 0.33% 0.33% [.] <hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, reqwest::connect::sealed::Conn, hyper::proto::h1::role::Clien
+ 0.32% 0.32% [.] <reqwest::async_impl::client::Pending as core::future::future::Future>::poll - - 
+ 0.32% 0.32% [k] __nf_conntrack_find_get - - 
+ 0.32% 0.32% [.] tokio::runtime::task::raw::poll::<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::
+ 0.32% 0.32% [.] httparse::parse_headers_iter_uninit - - 
+ 0.31% 0.31% [.] <tokio::runtime::time::handle::Handle>::reregister - - 
+ 0.31% 0.29% [k] __rcu_read_unlock - - 
+ 0.30% 0.10% [.] update_cfs_group - - 
+ 0.30% 0.30% [.] <telegram_bot_api_rs::client::engine::TelegramEngine>::universal_call::{closure#0} - - 
+ 0.30% 0.30% [.] <serde_json::read::SliceRead>::skip_to_escape - - 
+ 0.30% 0.30% [.] <hyper::body::incoming::Incoming as http_body::Body>::poll_frame - - 
+ 0.30% 0.21% [k] sk_filter_trim_cap - - 
+ 0.29% 0.29% [.] <url::ParseOptions>::parse - - 
+ 0.29% 0.06% [.] nft_meta_get_eval - - 
+ 0.29% 0.29% [k] _raw_spin_lock - - 
+ 0.29% 0.15% [.] update_se - - 
+ 0.29% 0.28% [k] memset_orig - - 
+ 0.29% 0.29% [k] tcp_event_data_recv - - 
+ 0.28% 0.28% [k] fdget_pos - - 
+ 0.28% 0.10% [.] tcp_event_new_data_sent - - 
+ 0.28% 0.28% [.] bytes::bytes::shared_drop - - 
+ 0.28% 0.07% [.] wakeup_preempt_fair - - 
+ 0.28% 0.28% [.] __memcmp_avx2_movbe - - 
+ 0.28% 0.07% [.] mem_cgroup_sk_charge - - 
+ 0.27% 0.27% [k] kmem_cache_alloc_node_noprof - - 
+ 0.27% 0.27% [.] <hyper::proto::h1::io::Buffered<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::encode::EncodedBuf<bytes::bytes::Bytes>>>::poll_f
+ 0.27% 0.11% [.] psi_task_switch - - 
+ 0.27% 0.07% [.] security_socket_sendmsg - - 
+ 0.27% 0.27% [.] bytes::bytes_mut::shared_v_drop - - 
+ 0.27% 0.27% [.] <tower::util::map_future::MapFuture<axum::util::MapIntoResponse<axum::handler::service::HandlerService<telegram_bot_api_rs::handlers::generic::generic_post_handler, (axum_core::extract::private::ViaReque
+ 0.27% 0.11% [.] futex_hash - - 
+ 0.26% 0.26% [.] 0x0000000000000a09 - - 
+ 0.26% 0.00% [.] 0x000075ead0a42a09 - - 
+ 0.26% 0.09% [.] sk_page_frag_refill - - 
+ 0.26% 0.00% [.] checked_request2size (inlined) - - 
+ 0.26% 0.02% [.] tcp_send_mss - - 
+ 0.26% 0.07% [.] security_file_permission - - 
+ 0.25% 0.21% [.] futex_q_lock - - 
+ 0.25% 0.16% [k] apparmor_socket_sendmsg - - 
+ 0.25% 0.08% [k] ep_item_poll.isra.0 - - 
+ 0.24% 0.09% [.] tcp_rearm_rto - - 
+ 0.24% 0.24% [.] <alloc::collections::btree::map::IntoIter<alloc::string::String, serde_json::value::Value>>::dying_next - - 
+ 0.24% 0.16% [.] apparmor_file_permission - - 
+ 0.24% 0.03% [.] perf_adjust_freq_unthr_context - - 
+ 0.24% 0.24% [.] <tokio::sync::mpsc::list::Rx<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>>>::pop - - 
+ 0.24% 0.02% [.] __netif_rx - - 
+ 0.23% 0.01% [.] perf_event_task_tick - - 
+ 0.23% 0.23% [.] <url::parser::Parser>::parse_path::push_pending - - 
+ 0.23% 0.23% [.] <hyper::proto::h1::conn::Conn<reqwest::connect::sealed::Conn, bytes::bytes::Bytes, hyper::proto::h1::role::Client>>::write_head - - 
+ 0.23% 0.07% [k] task_tick_fair - - 
+ 0.23% 0.12% [k] update_rq_clock - - 
+ 0.23% 0.15% [.] tcp_current_mss - - 
+ 0.22% 0.16% [k] nf_nat_ipv4_local_fn - - 
+ 0.22% 0.01% [.] netif_rx_internal - - 
+ 0.22% 0.19% [k] mod_memcg_state - - 
+ 0.21% 0.21% [.] core::fmt::write - - 
+ 0.21% 0.21% [.] <http::header::map::HeaderMap as core::clone::Clone>::clone - - 
+ 0.21% 0.21% [.] core::ptr::drop_glue::<reqwest::connect::ConnectorService> - - 
+ 0.21% 0.21% [.] <alloc::collections::vec_deque::iter::Iter<hyper::proto::h1::encode::EncodedBuf<bytes::bytes::Bytes>> as core::iter::traits::iterator::Iterator>::fold::<usize, core::iter::adapters::map::map_fold<&hyper:
+ 0.21% 0.14% [k] kfree_skbmem - - 
+ 0.21% 0.02% [.] __irq_exit_rcu - - 
+ 0.20% 0.15% [k] select_idle_sibling - - 
+ 0.20% 0.20% [k] __virt_addr_valid - - 
+ 0.20% 0.18% [k] __futex_hash - - 
+ 0.20% 0.20% [k] _copy_from_iter - - 
+ 0.20% 0.00% [.] irq_exit_rcu - - 
+ 0.20% 0.20% [.] <tokio::sync::notify::NotifiedProject>::poll_notified - - 
+ 0.20% 0.11% [.] reweight_entity - - 
+ 0.19% 0.18% [k] nf_nat_inet_fn - - 
+ 0.19% 0.08% [.] _raw_spin_unlock_irqrestore - - 
+ 0.19% 0.19% [k] _raw_read_lock_bh - - 
+ 0.19% 0.19% [.] <hyper::proto::h1::io::Buffered<reqwest::connect::sealed::Conn, hyper::proto::h1::encode::EncodedBuf<bytes::bytes::Bytes>>>::poll_flush - - 
+ 0.19% 0.18% [k] pick_eevdf - - 
+ 0.18% 0.18% [.] <reqwest::async_impl::client::HyperService as tower_service::Service<http::request::Request<reqwest::async_impl::body::Body>>>::call::{closure#0} - - 
+ 0.18% 0.03% [.] skb_free_head - - 
+ 0.18% 0.17% [.] dl_server_update - - 
+ 0.18% 0.16% [k] tcp_schedule_loss_probe - - 
+ 0.18% 0.17% [k] aa_inet_msg_perm - - 
+ 0.18% 0.06% [.] __sk_mem_reduce_allocated - - 
+ 0.18% 0.16% [k] skb_page_frag_refill - - 
+ 0.18% 0.18% [k] tcp_in_window - - 
+ 0.18% 0.14% [.] x86_pmu_disable_all - - 
+ 0.18% 0.18% [k] tcp_rcv_space_adjust - - 
+ 0.18% 0.12% [k] validate_xmit_skb - - 
+ 0.17% 0.15% [k] kfree - - 
+ 0.17% 0.17% [.] <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write - - 
+ 0.17% 0.17% [.] <serde_json::de::MapAccess<serde_json::read::SliceRead> as serde_core::de::MapAccess>::next_value::<serde_core::de::ignored_any::IgnoredAny> - - 
+ 0.17% 0.15% [k] enqueue_to_backlog - - 
+ 0.17% 0.17% [.] <axum::util::MapIntoResponseFuture<axum::handler::future::IntoServiceFuture<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = http::response::Response<axum_core::body::Body>> + c
+ 0.17% 0.17% [k] eth_type_trans - - 
+ 0.17% 0.17% [.] bytes::bytes::shared_clone - - 
+ 0.17% 0.17% [k] __update_load_avg_se - - 
+ 0.16% 0.01% [.] pow@@GLIBC_2.29 - - 
+ 0.16% 0.03% [.] lock_timer_base - - 
+ 0.16% 0.06% [k] sched_clock_cpu - - 
+ 0.16% 0.16% [.] <http::header::name::StandardHeader>::from_bytes - - 
+ 0.16% 0.16% [.] <hashbrown::map::HashMap<core::any::TypeId, alloc::boxed::Box<dyn http::extensions::AnyClone + core::marker::Send + core::marker::Sync>, core::hash::BuildHasherDefault<http::extensions::IdHasher>>>::inse
+ 0.16% 0.16% [.] <dashmap::DashMap<alloc::string::String, ()> as dashmap::t::Map<alloc::string::String, (), std::hash::random::RandomState>>::_get::<str> - - 
+ 0.16% 0.16% [.] <http::header::map::HeaderMap>::get_all::<http::header::name::HeaderName> - - 
+ 0.16% 0.09% [k] lock_sock_nested - - 
+ 0.16% 0.05% [k] raw_local_deliver - - 
+ 0.16% 0.16% [.] core::ptr::drop_glue::<http::header::map::HeaderMap> - - 
+ 0.16% 0.16% [.] <alloc::borrow::Cow<[u8]> as core::convert::From<percent_encoding::PercentDecode>>::from - - 
+ 0.16% 0.16% [.] url::host::parse_ipv4number - - 
+ 0.15% 0.00% [.] sched_balance_softirq - - 
+ 0.15% 0.00% [.] sched_balance_update_blocked_averages - - 
+ 0.15% 0.15% [.] hyper::headers::content_length_parse_all - - 
+ 0.15% 0.15% [.] <tokio::net::tcp::stream::TcpStream as tokio::io::async_read::AsyncRead>::poll_read - - 
+ 0.15% 0.15% [k] srso_alias_return_thunk - - 
+ 0.15% 0.15% [.] <tokio::runtime::scheduler::multi_thread::handle::Handle>::notify_parked_local - - 
+ 0.15% 0.15% [.] _raw_spin_lock_bh - - 
+ 0.15% 0.15% [.] <http::uri::path::PathAndQuery>::from_shared - - 
+ 0.15% 0.15% [.] core::ptr::drop_glue::<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>> - - 
+ 0.15% 0.15% [.] <tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService> as tower_service::Service<http::request::Request<reqwest::async_impl::body::Body>>>::call - - 
+ 0.15% 0.15% [.] tokio::runtime::task::waker::clone_waker - - 
+ 0.15% 0.15% [.] <axum::util::MapIntoResponseFuture<tower::util::map_err::MapErrFuture<axum::middleware::from_fn::ResponseFuture, <! as core::convert::Into<!>>::into>> as core::future::future::Future>::poll - - 
+ 0.15% 0.11% [k] sock_poll - - 
+ 0.15% 0.06% [.] nf_nat_ipv4_out - - 
+ 0.14% 0.14% [.] <reqwest::async_impl::response::Response>::bytes::{closure#0} - - 
+ 0.14% 0.08% [k] __sched_balance_update_blocked_averages - - 
+ 0.14% 0.06% [k] apparmor_socket_recvmsg - - 
+ 0.14% 0.13% [.] __ieee754_pow_fma - - 
+ 0.14% 0.14% [.] tokio::runtime::task::waker::wake_by_val - - 
+ 0.14% 0.14% [.] <tokio::runtime::time::wheel::Wheel>::remove - - 
+ 0.14% 0.14% [k] futex_ref_get - - 
+ 0.14% 0.14% [k] syscall_return_via_sysret - - 
+ 0.14% 0.14% [.] bytes::bytes_mut::shared_v_drop - - 
+ 0.14% 0.14% [k] read_tsc - - 
+ 0.14% 0.14% [.] <hashbrown::raw::RawTable<(core::any::TypeId, alloc::boxed::Box<dyn http::extensions::AnyClone + core::marker::Send + core::marker::Sync>)>>::reserve_rehash::<hashbrown::map::make_hasher<core::any::TypeI
+ 0.13% 0.07% [.] release_sock - - 
+ 0.13% 0.13% [.] <url::parser::Parser>::with_query_and_fragment - - 
+ 0.13% 0.13% [.] tokio::runtime::task::raw::poll::<axum::serve::handle_connection<tokio::net::tcp::listener::TcpListener, axum::routing::Router, axum::routing::Router>::{closure#0}::{closure#3}, alloc::sync::Arc<tokio::r
+ 0.13% 0.13% [.] <http::header::name::HeaderName>::from_bytes - - 
+ 0.13% 0.13% [.] <serde_json::de::Deserializer<serde_json::read::SliceRead>>::parse_integer - - 
+ 0.13% 0.13% [k] __netif_receive_skb_core.constprop.0 - - 
+ 0.13% 0.13% [.] <axum::util::MapIntoResponseFuture<tower::util::map_err::MapErrFuture<axum::routing::route::RouteFuture<!>, <! as core::convert::Into<!>>::into>> as core::future::future::Future>::poll - - 
+ 0.13% 0.07% [.] requeue_delayed_entity - - 
+ 0.13% 0.13% [.] <tower::retry::future::ResponseFuture<reqwest::retry::Policy, reqwest::async_impl::client::HyperService, http::request::Request<reqwest::async_impl::body::Body>> as core::future::future::Future>::poll - 
+ 0.13% 0.13% [.] <u8 as core::fmt::Display>::fmt - - 
+ 0.13% 0.13% [.] <tokio::sync::mpsc::chan::Rx<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbo
+ 0.13% 0.01% [.] import_iovec - - 
+ 0.13% 0.13% [.] <axum::routing::path_router::Node>::at - - 
+ 0.13% 0.13% [k] ip_rcv_finish_core - - 
+ 0.13% 0.08% [k] wake_affine - - 
+ 0.13% 0.04% [.] set_next_entity - - 
+ 0.12% 0.12% [.] <hyper_util::client::legacy::connect::ExtraEnvelope<hyper_util::client::legacy::connect::http::HttpInfo> as hyper_util::client::legacy::connect::ExtraInner>::set - - 
+ 0.12% 0.12% [.] <hyper_rustls::stream::MaybeHttpsStream<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>> as hyper::rt::io::Read>::poll_read - - 
+ 0.12% 0.03% [k] security_socket_recvmsg - - 
+ 0.12% 0.12% [k] __nr_to_section - - 
+ 0.12% 0.12% [.] <telegram_bot_api_rs::client::engine::TelegramEngine>::check_token_filter - - 
+ 0.12% 0.12% [.] <hyper::proto::h1::dispatch::Server<hyper_util::service::glue::TowerToHyperService<tower::util::map_request::MapRequest<axum::routing::Router, axum::serve::handle_connection<tokio::net::tcp::listener::Tc
+ 0.12% 0.12% [k] ipv4_conntrack_defrag - - 
+ 0.12% 0.11% [k] ip_send_check - - 
+ 0.12% 0.12% [.] <reqwest::async_impl::client::Client>::request::<&alloc::string::String> - - 
+ 0.12% 0.12% [.] <tokio::runtime::scheduler::multi_thread::handle::Handle>::schedule_task::{closure#0} - - 
+ 0.12% 0.12% [k] cpuacct_charge - - 
+ 0.12% 0.12% [k] cubictcp_cwnd_event - - 
+ 0.12% 0.03% [.] mem_cgroup_sk_uncharge - - 
+ 0.12% 0.12% [k] ktime_get - - 
+ 0.12% 0.12% [k] cubictcp_acked - - 
+ 0.11% 0.05% [k] tcp_mstamp_refresh - - 
+ 0.11% 0.11% [.] <tokio::runtime::time::entry::TimerEntry as core::ops::drop::Drop>::drop - - 
+ 0.11% 0.11% [.] http::header::map::hash_elem_using::<http::header::name::HeaderName> - - 
+ 0.11% 0.11% [.] <alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>>::insert - - 
+ 0.11% 0.11% [.] <hyper::client::dispatch::Callback<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>>::poll_canceled - - 
+ 0.11% 0.11% [.] <alloc::string::String as core::fmt::Write>::write_str.6917 - - 
+ 0.11% 0.11% [.] alloc::fmt::format::format_inner - - 
+ 0.11% 0.11% [.] <tokio::runtime::io::driver::Driver>::turn - - 
+ 0.11% 0.11% [.] <http::uri::Uri>::from_shared - - 
+ 0.11% 0.11% [.] <serde_json::de::MapAccess<_> as serde_core::de::MapAccess>::next_key_seed::has_next_key::<serde_json::read::SliceRead> - - 
+ 0.11% 0.11% [.] <hyper::proto::h1::io::WriteBuf<hyper::proto::h1::encode::EncodedBuf<bytes::bytes::Bytes>>>::buffer::<bytes::bytes::Bytes> - - 
+ 0.11% 0.02% [.] sched_clock - - 
+ 0.11% 0.08% [.] _raw_spin_unlock_bh - - 
+ 0.10% 0.00% [.] tcache_put (inlined) - - 
+ 0.10% 0.10% [.] <std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&(http::uri::scheme::Scheme, http::uri::authority::Authority)> - - 
+ 0.10% 0.10% [k] psi_flags_change - - 
+ 0.10% 0.04% [.] switch_fpu_return - - 
+ 0.10% 0.10% [k] entry_SYSCALL_64_safe_stack - - 
+ 0.10% 0.10% [k] tcp_rate_check_app_limited - - 
+ 0.10% 0.10% [.] bytes::bytes_mut::shared_v_clone - - 
+ 0.10% 0.10% [.] <bytes::bytes_mut::BytesMut>::reserve_inner - - 
+ 0.10% 0.00% [.] tcache_put_n (inlined) - - 
+ 0.10% 0.10% [.] <tokio::net::tcp::stream::TcpStream as tokio::io::async_write::AsyncWrite>::poll_write_vectored - - 
+ 0.10% 0.10% [.] <url::parser::Parser>::parse_path_start - - 
+ 0.09% 0.09% [k] raw_v4_input - - 
+ 0.09% 0.09% [.] core::ptr::drop_glue::<tokio::time::sleep::Sleep> - - 
+ 0.09% 0.09% [.] <serde_json::de::Deserializer<serde_json::read::SliceRead>>::ignore_integer - - 
+ 0.09% 0.09% [.] <tower::util::map_future::MapFuture<axum::util::MapIntoResponse<tower::util::map_err::MapErr<axum::middleware::from_fn::FromFn<telegram_bot_api_rs::server::telemetry_middleware, telegram_bot_api_rs::serv
+ 0.09% 0.06% [k] security_sock_rcv_skb - - 
+ 0.09% 0.08% [k] skb_clone - - 
+ 0.09% 0.09% [.] bytes::bytes::promotable_even_drop - - 
+ 0.09% 0.08% [k] kmem_cache_free - - 
+ 0.09% 0.09% [.] <tokio::sync::oneshot::Sender<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<reqwest::async_impl::body::Body>
+ 0.09% 0.09% [.] <core::str::iter::SplitInternal<char>>::next_back - - 
+ 0.09% 0.09% [.] <reqwest::async_impl::client::HyperService as tower_service::Service<http::request::Request<reqwest::async_impl::body::Body>>>::call - - 
+ 0.09% 0.09% [k] __tcp_select_window - - 
+ 0.09% 0.09% [k] call_function_single_prep_ipi - - 
+ 0.09% 0.00% [.] tcache_put (inlined) - - 
+ 0.09% 0.00% [.] tcache_put_n (inlined) - - 
+ 0.09% 0.05% [.] update_cfs_rq_load_avg - - 
+ 0.09% 0.09% [k] tcp_tso_segs - - 
+ 0.09% 0.09% [.] <tokio::runtime::scheduler::Handle>::current - - 
+ 0.09% 0.09% [k] is_vmalloc_addr - - 
+ 0.09% 0.09% [k] validate_xmit_xfrm - - 
+ 0.08% 0.08% [.] tokio::runtime::task::waker::wake_by_ref - - 
+ 0.08% 0.08% [k] get_futex_key - - 
+ 0.08% 0.02% [k] irqentry_exit - - 
+ 0.08% 0.08% [k] nf_confirm - - 
+ 0.08% 0.08% [k] __update_load_avg_cfs_rq - - 
+ 0.08% 0.08% [.] <<alloc::collections::btree::node::Handle<alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Dying, _, _, _>, alloc::collections::btree::node::marker::KV>>::drop_key_val::D
+ 0.08% 0.08% [.] httparse::parse_headers_iter_uninit - - 
+ 0.08% 0.08% [k] try_charge_memcg - - 
+ 0.08% 0.08% [.] <hyper::proto::h1::io::Buffered<reqwest::connect::sealed::Conn, hyper::proto::h1::encode::EncodedBuf<bytes::bytes::Bytes>>>::poll_read_from_io - - 
+ 0.08% 0.08% [k] tcp_v4_fill_cb - - 
+ 0.08% 0.08% [k] _copy_to_iter - - 
+ 0.08% 0.08% [.] core::slice::memchr::memrchr_aligned - - 
+ 0.08% 0.08% [.] bytes::bytes::static_drop - - 
+ 0.08% 0.01% [.] tcp_cleanup_rbuf - - 
+ 0.08% 0.08% [k] tcp_update_skb_after_send - - 
+ 0.08% 0.08% [k] vmware_sched_clock - - 
+ 0.08% 0.08% [.] core::ptr::drop_glue::<tower::util::map_future::MapFuture<axum::util::MapIntoResponse<tower::util::map_err::MapErr<axum_core::extract::default_body_limit::private::DefaultBodyLimitService<axum::routing::
+ 0.08% 0.07% [k] ktime_get_with_offset - - 
+ 0.08% 0.08% [k] cubictcp_cong_avoid - - 
+ 0.08% 0.08% [k] futex_wake_mark - - 
+ 0.08% 0.06% [.] _int_free_maybe_trim - - 
+ 0.07% 0.03% [.] sched_balance_newidle - - 
+ 0.07% 0.07% [.] <i64 as alloc::string::SpecToString>::spec_to_string - - 
+ 0.07% 0.07% [.] <serde_json::read::SliceRead as serde_json::read::Read>::ignore_str - - 
+ 0.07% 0.04% [k] put_prev_entity - - 
+ 0.07% 0.07% [k] ip_skb_dst_mtu - - 
+ 0.07% 0.07% [.] <core::fmt::Formatter>::pad_integral - - 
+ 0.07% 0.07% [.] core::ptr::drop_glue::<tower::util::oneshot::State<tower::util::boxed_clone_sync::BoxCloneSyncService<http::request::Request<axum_core::body::Body>, http::response::Response<axum_core::body::Body>, !>, h
+ 0.07% 0.07% [.] <alloc::raw_vec::RawVecInner>::finish_grow - - 
+ 0.07% 0.07% [k] apparmor_ip_postroute - - 
+ 0.07% 0.07% [.] bytes::bytes::shared_drop - - 
+ 0.07% 0.07% [k] __tcp_cleanup_rbuf - - 
+ 0.07% 0.07% [.] <http::header::map::HeaderMap>::get2::<http::header::name::HeaderName> - - 
+ 0.07% 0.07% [.] <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global> - - 
+ 0.07% 0.07% [.] core::ptr::drop_glue::<axum::extract::matched_path::MatchedPath> - - 
+ 0.07% 0.07% [.] <bytes::bytes::Bytes as axum_core::response::into_response::IntoResponse>::into_response - - 
+ 0.07% 0.07% [k] native_apic_msr_eoi - - 
+ 0.07% 0.07% [.] core::iter::adapters::try_process::<core::iter::adapters::map::Map<core::iter::adapters::filter::Filter<core::iter::adapters::filter::Filter<matchit::params::ParamsIter, axum::routing::url_params::insert
+ 0.07% 0.07% [.] core::ptr::drop_glue::<http::extensions::Extensions> - - 
+ 0.07% 0.06% [k] __enqueue_entity - - 
+ 0.07% 0.05% [k] place_entity - - 
+ 0.07% 0.05% [k] nf_nat_ipv4_local_in - - 
+ 0.07% 0.07% [k] aa_file_perm - - 
+ 0.07% 0.07% [.] url::parser::default_port - - 
+ 0.07% 0.07% [k] tcp_measure_rcv_mss - - 
+ 0.07% 0.07% [k] tcp_skb_entail - - 
+ 0.07% 0.07% [k] avg_vruntime - - 
+ 0.07% 0.00% [.] tick_program_event - - 
+ 0.07% 0.07% [.] bytes::bytes::promotable_even_clone - - 
+ 0.07% 0.07% [k] restore_fpregs_from_fpstate - - 
+ 0.07% 0.07% [k] tcp_release_cb - - 
+ 0.07% 0.07% [.] <reqwest::retry::Policy as tower::retry::policy::Policy<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>, reqwest::error::Error>>::clone_
+ 0.07% 0.03% [k] __import_iovec - - 
+ 0.07% 0.07% [k] fpregs_assert_state_consistent - - 
+ 0.07% 0.07% [.] <hyper::proto::h1::conn::Conn<reqwest::connect::sealed::Conn, bytes::bytes::Bytes, hyper::proto::h1::role::Client>>::poll_read_body - - 
+ 0.06% 0.04% [k] tcp_inbound_hash - - 
+ 0.06% 0.06% [k] _raw_spin_unlock - - 
+ 0.06% 0.06% [.] axum::extract::matched_path::set_matched_path_for_request - - 
+ 0.06% 0.06% [.] <http::header::map::HeaderMap>::try_reserve_one - - 
+ 0.06% 0.06% [.] <tower::util::map_future::MapFuture<axum::util::MapIntoResponse<tower::util::map_err::MapErr<axum::middleware::from_fn::FromFn<telegram_bot_api_rs::server::telemetry_middleware, telegram_bot_api_rs::serv
+ 0.06% 0.06% [.] <tower::util::map_future::MapFuture<axum::util::MapIntoResponse<axum::handler::service::HandlerService<telegram_bot_api_rs::handlers::generic::generic_post_handler, (axum_core::extract::private::ViaReque
+ 0.06% 0.06% [.] <http::header::map::HeaderMap>::try_insert2::<http::header::name::HeaderName> - - 
+ 0.06% 0.03% [.] __sk_dst_check - - 
+ 0.06% 0.05% [k] tcp_ack_update_rtt - - 
+ 0.06% 0.06% [.] tokio::runtime::task::raw::schedule::<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>> - - 
+ 0.06% 0.01% [.] sched_clock_noinstr - - 
+ 0.06% 0.06% [.] <tokio::runtime::io::scheduled_io::ScheduledIo>::wake - - 
+ 0.06% 0.06% [.] <hyper::body::chan::Sender>::try_send_data - - 
+ 0.06% 0.01% [.] account_process_tick - - 
+ 0.06% 0.06% [k] bpf_skops_write_hdr_opt.isra.0 - - 
+ 0.06% 0.06% [k] entity_lag.isra.0 - - 
+ 0.06% 0.06% [k] ip_rcv_core - - 
+ 0.06% 0.06% [k] dst_release - - 
+ 0.06% 0.06% [k] rb_erase - - 
+ 0.06% 0.03% [.] ipv4_conntrack_in - - 
+ 0.06% 0.05% [k] iovec_from_user.part.0 - - 
+ 0.06% 0.06% [k] tcp_wfree - - 
+ 0.06% 0.06% [.] <http::header::map::VacantEntry<http::header::value::HeaderValue>>::try_insert - - 
+ 0.06% 0.02% [k] __do_sys_brk - - 
+ 0.06% 0.00% [.] __brk - - 
+ 0.06% 0.00% [.] __default_morecore@GLIBC_2.2.5 - - 
+ 0.06% 0.00% [.] __sbrk - - 
+ 0.06% 0.00% [.] __x64_sys_brk - - 
+ 0.06% 0.06% [k] __css_rstat_updated - - 
+ 0.06% 0.06% [.] <http::header::map::HeaderMap>::try_append2::<http::header::name::HeaderName> - - 
+ 0.06% 0.06% [.] <hyper::proto::h1::role::FastWrite as core::fmt::Write>::write_str - - 
+ 0.06% 0.06% [.] <http_body_util::collected::Collected<bytes::bytes::Bytes>>::push_frame - - 
+ 0.06% 0.06% [.] <axum::util::MapIntoResponseFuture<axum::routing::route::RouteFuture<!>> as core::future::future::Future>::poll - - 
+ 0.06% 0.06% [.] <alloc::string::String as core::fmt::Write>::write_str.5386 - - 
+ 0.06% 0.06% [.] axum::extract::matched_path::set_matched_path_for_request - - 
+ 0.06% 0.03% [.] put_prev_task_fair - - 
+ 0.06% 0.06% [.] <telegram_bot_api_rs::client::engine::TelegramEngine>::record_active_bot - - 
+ 0.05% 0.05% [.] <hyper_util::common::timer::Timer as hyper::rt::timer::Timer>::now - - 
+ 0.05% 0.05% [.] <alloc::collections::btree::node::Handle<alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Dying, alloc::string::String, serde_json::value::Value, alloc::collections::btre
+ 0.05% 0.05% [.] bytes::bytes::promotable_even_clone - - 
+ 0.05% 0.05% [k] apparmor_ip_localout - - 
+ 0.05% 0.05% [k] netif_skb_features - - 
+ 0.05% 0.05% [.] <hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper_util::service::glue::TowerToHyperService<tower::util::map_request::MapRequest<axum::routing::Router, axum::serve::handle_c
+ 0.05% 0.05% [.] <hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, reqwest::connect::sealed::Conn, hyper::proto::h1::role::Clien
+ 0.05% 0.05% [.] bytes::bytes::shared_clone - - 
+ 0.05% 0.05% [k] amd_pmu_addr_offset - - 
+ 0.05% 0.05% [k] nf_nat_ipv4_pre_routing - - 
+ 0.05% 0.05% [.] <http::header::map::HeaderMap>::insert_occupied - - 
+ 0.05% 0.05% [.] <alloc::raw_vec::RawVecInner>::finish_grow - - 
+ 0.05% 0.05% [k] tcp_poll - - 
+ 0.05% 0.05% [.] <hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body> as hyper::proto::h1::dispatch::Dispatch>::recv_msg - - 
+ 0.05% 0.05% [k] futex_private_hash_put - - 
+ 0.05% 0.05% [.] hyper::headers::te_is_trailers - - 
+ 0.05% 0.05% [k] __usecs_to_jiffies - - 
+ 0.05% 0.04% [k] hash_conntrack_raw - - 
+ 0.05% 0.05% [.] <bool as serde_core::de::Deserialize>::deserialize::<&mut serde_json::de::Deserializer<serde_json::read::SliceRead>> - - 
+ 0.05% 0.05% [.] <http::header::name::StandardHeader>::as_str.4990 - - 
+ 0.05% 0.05% [.] <hyper_util::client::proxy::matcher::Matcher>::intercept - - 
+ 0.05% 0.05% [k] _find_next_bit - - 
+ 0.05% 0.00% [.] clockevents_program_event - - 
+ 0.05% 0.05% [k] apparmor_socket_sock_rcv_skb - - 
+ 0.05% 0.05% [.] <hyper::proto::h1::conn::Conn<reqwest::connect::sealed::Conn, bytes::bytes::Bytes, hyper::proto::h1::role::Client>>::maybe_notify - - 
+ 0.05% 0.05% [k] select_idle_cpu - - 
+ 0.05% 0.05% [k] backlog_lock_irq_save - - 
+ 0.05% 0.05% [k] task_h_load - - 
+ 0.05% 0.05% [.] <reqwest::proxy::Matcher>::intercept - - 
+ 0.05% 0.05% [k] propagate_entity_load_avg - - 
+ 0.05% 0.05% [.] core::ptr::drop_glue::<reqwest::async_impl::client::Pending> - - 
+ 0.05% 0.05% [k] ipv4_mtu - - 
+ 0.05% 0.00% [.] systrim.constprop.0 - - 
+ 0.05% 0.05% [k] _raw_spin_lock_irq - - 
+ 0.05% 0.05% [.] <http::header::map::HeaderMap>::try_insert2::<http::header::name::HeaderName> - - 
+ 0.05% 0.05% [k] detach_if_pending - - 
+ 0.05% 0.05% [k] refill_stock - - 
+ 0.05% 0.05% [.] <hyper_util::client::legacy::pool::Pool<hyper_util::client::legacy::client::PoolClient<reqwest::async_impl::body::Body>, (http::uri::scheme::Scheme, http::uri::authority::Authority)>>::reuse - - 
+ 0.05% 0.05% [.] <hyper::body::chan::Sender as core::ops::drop::Drop>::drop - - 
+ 0.05% 0.05% [.] <alloc::raw_vec::RawVec<matchit::tree::Skipped<axum::routing::RouteId>>>::grow_one - - 
+ 0.05% 0.05% [.] <axum::routing::url_params::UrlParams as http::extensions::AnyClone>::as_any - - 
+ 0.05% 0.00% [.] log_inline (inlined) - - 
+ 0.05% 0.05% [.] <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global> - - 
+ 0.05% 0.05% [k] tcp_update_pacing_rate - - 
+ 0.04% 0.04% [k] futex_q_unlock - - 
+ 0.04% 0.04% [.] <http_body_util::combinators::map_err::MapErr<reqwest::async_impl::body::TotalTimeoutBody<http_body_util::combinators::box_body::BoxBody<bytes::bytes::Bytes, alloc::boxed::Box<dyn core::error::Error + co
+ 0.04% 0.03% [.] __resched_curr - - 
+ 0.04% 0.04% [.] <alloc::raw_vec::RawVec<http::header::map::Bucket<http::header::value::HeaderValue>>>::grow_one - - 
+ 0.04% 0.01% [.] lapic_next_event - - 
+ 0.04% 0.04% [.] <alloc::raw_vec::RawVecInner>::finish_grow - - 
+ 0.04% 0.04% [k] __pi__text - - 
+ 0.04% 0.02% [k] nft_meta_get_eval_skugid - - 
+ 0.04% 0.04% [.] <hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server>>::maybe_notify -
+ 0.04% 0.04% [.] <http::uri::Uri as core::fmt::Display>::fmt - - 
+ 0.04% 0.04% [.] http::header::map::hash_elem_using::<http::header::name::HeaderName> - - 
+ 0.04% 0.04% [.] <http::header::map::HeaderMap>::try_reserve_one - - 
+ 0.04% 0.04% [.] http::header::map::hash_elem_using::<http::header::name::HeaderName> - - 
+ 0.04% 0.04% [.] <http::uri::authority::Authority>::port - - 
+ 0.04% 0.04% [k] tcp_update_recv_tstamps - - 
+ 0.04% 0.04% [k] nf_ct_get_tuple - - 
+ 0.04% 0.04% [.] <bytes::bytes_mut::BytesMut>::split_to - - 
+ 0.04% 0.04% [.] core::ptr::drop_glue::<alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>> - - 
+ 0.04% 0.04% [.] <core::fmt::Formatter>::pad_integral::write_prefix - - 
+ 0.04% 0.04% [k] hook_socket_sendmsg - - 
+ 0.04% 0.04% [k] tcp_grow_window - - 
+ 0.04% 0.04% [.] <parking_lot::condvar::Condvar>::notify_one_slow - - 
+ 0.04% 0.04% [.] <http::uri::authority::Authority as core::cmp::PartialEq>::eq - - 
+ 0.04% 0.04% [k] _raw_spin_unlock_irq - - 
+ 0.04% 0.04% [k] _find_first_bit - - 
+ 0.04% 0.04% [.] <reqwest::async_impl::request::RequestBuilder>::new - - 
+ 0.04% 0.04% [.] <httparse::Response>::parse_with_config_and_uninit_headers - - 
+ 0.04% 0.04% [.] core::ptr::drop_glue::<http::request::Parts> - - 
+ 0.04% 0.04% [k] tcp_cwnd_validate - - 
+ 0.04% 0.04% [.] <hyper::body::chan::Sender>::poll_ready - - 
+ 0.04% 0.04% [.] <tower_http::follow_redirect::RequestUri as http::extensions::AnyClone>::as_any - - 
+ 0.04% 0.04% [k] __siphash_unaligned - - 
+ 0.04% 0.04% [k] fput - - 
+ 0.04% 0.04% [.] <std::sys::pal::unix::time::Timespec>::sub_timespec - - 
+ 0.04% 0.04% [.] <telegram_bot_api_rs::handlers::generic::generic_post_handler as axum::handler::Handler<(axum_core::extract::private::ViaRequest, axum::extract::path::Path<(alloc::string::String, alloc::string::String)>
+ 0.04% 0.04% [k] tcp_established_options - - 
+ 0.04% 0.04% [k] skb_clone_tx_timestamp - - 
+ 0.04% 0.00% [.] flush_tlb_mm_range - - 
+ 0.04% 0.00% [.] tlb_finish_mmu - - 
+ 0.04% 0.00% [.] tlb_flush_mmu_tlbonly - - 
+ 0.04% 0.04% [.] <core::net::parser::Parser>::read_ipv4_addr - - 
+ 0.04% 0.04% [.] <telegram_bot_api_rs::client::engine::TelegramEngine>::universal_call_inner::{closure#0} - - 
+ 0.04% 0.04% [.] <hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server>>::poll_read_body

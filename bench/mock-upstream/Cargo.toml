@@ -1,0 +1,20 @@
+[package]
+name = "mock-upstream"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Tiny mock of the cloud Telegram Bot API + webhook receiver, used only by the benchmark suite."
+
+# Standalone: not part of the root package.
+[workspace]
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1", "query"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+serde_json = "1.0.154"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+panic = "abort"

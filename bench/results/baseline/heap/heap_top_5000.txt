@@ -1,0 +1,21 @@
+total allocation calls: 621773
+   370451  59.6%  {async_block#0}<> telegram_bot_api_rs::handlers::generic::generic_post_handler::{async_fn_env#0}, telegram_bot_api_rs::h
+   102107  16.4%  (other/unattributed)
+    37421   6.0%  clone_box<><axum::util::MapIntoResponse<><http::request::Request<>, http::response::Response<>, !, axum::util::MapIntoRe
+    30006   4.8%  parse::parse_url::parse_with_scheme
+    25005   4.0%  call<>, tower::util::boxed_clone_sync::{impl#0}::new::{closure_env#0}<><axum_core::body::Body<alloc::boxed::Box<>
+    10002   1.6%  call<><http::request::Request<>, http::response::Response<>, !, axum::util::MapIntoResponse<> !<Output=core::result::Res
+    10002   1.6%  {async_block#0}<> telegram_bot_api_rs::server::telemetry_middleware::{async_fn_env#0}, telegram_bot_api_rs::server::tele
+     6463   1.0%  clone_box<>, tower::util::boxed_clone_sync::{impl#0}::new::{closure_env#0}<>
+     5001   0.8%  poll_write<>::poll_msg<>::poll<>::poll<>::call<>::{closure#2}<>::map<> axum_core::body::Body, axum_core::body::Body
+     5001   0.8%  into_url::parse
+     5001   0.8%  send::execute_request::map<> core::pin::Pin<><fn(tokio::time::sleep::Sleep) -<alloc::boxed::Box<>
+     5001   0.8%  poll::poll<>::poll::map<> http_body_util::combinators::box_body::BoxBody<>, http_body_util::combinators::box_body::BoxBo
+     5001   0.8%  poll::poll<>::poll::new::response<>::boxed<><bytes::bytes::Bytes, alloc::boxed::Box<>, http_body_util::combinators::map_
+     5001   0.8%  into_response::from::new<>::unwrap_or_else<>::{closure#0}<>::boxed<>::unwrap_or_else<>::{closure#0}<>::boxed_unsync<><by
+       65   0.0%  {closure#0}<><tokio::signal::registry::Globals, std::sync::once_lock::{impl#0}::get_or_init::{closure_env#0}<> tokio::si
+       50   0.0%  map<>, !<telegram_bot_api_rs::server::AppState, !, axum::routing::method_routing::{impl#4}::layer::{closure_env#0}<>, !
+       28   0.0%  into_route<> telegram_bot_api_rs::server::health_check::{async_fn_env#0}, telegram_bot_api_rs::server::AppState
+       28   0.0%  call_once<>::{closure#0}<>::layer<>::new<><http::request::Request<>, http::response::Response<>, !, axum::util::MapIntoR
+       19   0.0%  layer<><telegram_bot_api_rs::server::AppState, !, axum::middleware::from_fn::FromFnLayer<> telegram_bot_api_rs::server::
+       15   0.0%  layer<>::layer<>::map<>::call_once<>::{closure#0}<>::layer<>::new<><http::request::Request<>, http::response::Response<>

@@ -1,0 +1,6 @@
+5948	/tmp/scratch/bs/data
+total 5948
+-rw-r--r-- 1 user user 1921024 Nov 13 05:51 bot_api_state.sqlite3
+-rw-r--r-- 1 user user   32768 Nov 13 05:51 bot_api_state.sqlite3-shm
+-rw-r--r-- 1 user user 4136512 Nov 13 05:51 bot_api_state.sqlite3-wal
+drwxrwxr-x 2 user user      40 Nov 13 05:51 temp

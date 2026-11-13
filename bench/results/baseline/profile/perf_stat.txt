@@ -1,0 +1,14 @@
+
+ Performance counter stats for process id '264330':
+
+         48,282.20 msec task-clock                                                            
+           350,404      context-switches                                                      
+             2,854      cpu-migrations                                                        
+             2,224      page-faults                                                           
+   132,703,670,879      cycles                                                                  (75.06%)
+                 0      instructions                                                            (74.92%)
+                 0      branches                                                                (75.15%)
+                 0      branch-misses                                                           (74.88%)
+
+      10.005430526 seconds time elapsed
+

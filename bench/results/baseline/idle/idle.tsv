@@ -1,0 +1,4 @@
+run	startup_ms	rss_kb_t1s	rss_kb_t10s	vsz_kb	threads	fds	idle_cpu_ticks_10s
+1	18	9008	9128	229828	10	21	0
+2	11	9028	9208	229828	10	21	0
+3	12	9064	9180	229828	10	21	0

@@ -1,0 +1,4 @@
+   Compiling telegram-bot-api-rs v1.0.7 (/work/repo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.10s
+     Running unittests src/main.rs (/home/user/.cargo/build/d6/a8051c7a187bbe/debug/build/telegram-bot-api-rs/9071ba4a246902ae/out/telegram_bot_api_rs-9071ba4a246902ae)
+5.87 s wall

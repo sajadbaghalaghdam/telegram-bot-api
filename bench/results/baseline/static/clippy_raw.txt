@@ -1,0 +1,1564 @@
+    Checking telegram-bot-api-rs v1.0.7 (/work/repo)
+warning: this `if` statement can be collapsed
+   --> src/client/engine.rs:110:13
+    |
+110 | /             if std::env::var("TELEGRAM_UPSTREAM_PROXY").is_ok() {
+111 | |                 if let Ok(proxy) = reqwest::Proxy::all(p) {
+112 | |                     client_builder = client_builder.proxy(proxy);
+113 | |                 }
+114 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+110 ~             if std::env::var("TELEGRAM_UPSTREAM_PROXY").is_ok()
+111 ~                 && let Ok(proxy) = reqwest::Proxy::all(p) {
+112 |                     client_builder = client_builder.proxy(proxy);
+113 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/client/engine.rs:148:9
+    |
+148 | /         if !bot_id.is_empty() && !self.active_bots.contains_key(bot_id) {
+149 | |             if self.active_bots.len() < 4096 {
+150 | |                 self.active_bots.insert(bot_id.to_string(), ());
+151 | |             }
+152 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+148 ~         if !bot_id.is_empty() && !self.active_bots.contains_key(bot_id)
+149 ~             && self.active_bots.len() < 4096 {
+150 |                 self.active_bots.insert(bot_id.to_string(), ());
+151 ~             }
+    |
+
+warning: this function has too many arguments (8/7)
+   --> src/client/engine.rs:314:5
+    |
+314 | /     pub async fn upload_local_file_mtproto(
+315 | |         &self,
+316 | |         token: &str,
+317 | |         method: &str,
+...   |
+322 | |         extra_fields: Option<&serde_json::Map<String, Value>>,
+323 | |     ) -> TelegramResult<Bytes> {
+    | |______________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: this `if` statement can be collapsed
+   --> src/client/engine.rs:342:9
+    |
+342 | /         if let Ok(resp) = self.client.get(&chat_url).send().await {
+343 | |             if let Ok(val) = resp.json::<Value>().await {
+344 | |                 if let Some(res_obj) = val.get("result") {
+345 | |                     chat_json = res_obj.clone();
+...   |
+351 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+342 ~         if let Ok(resp) = self.client.get(&chat_url).send().await
+343 ~             && let Ok(val) = resp.json::<Value>().await {
+344 |                 if let Some(res_obj) = val.get("result") {
+...
+349 |                 }
+350 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/client/engine.rs:343:13
+    |
+343 | /             if let Ok(val) = resp.json::<Value>().await {
+344 | |                 if let Some(res_obj) = val.get("result") {
+345 | |                     chat_json = res_obj.clone();
+346 | |                     if let Some(u) = res_obj.get("username").and_then(|v| v.as_str()) {
+...   |
+350 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+343 ~             if let Ok(val) = resp.json::<Value>().await
+344 ~                 && let Some(res_obj) = val.get("result") {
+345 |                     chat_json = res_obj.clone();
+...
+348 |                     }
+349 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/client/engine.rs:410:9
+    |
+410 | /         if let Some(u) = bot_user {
+411 | |             if let Ok(u_val) = serde_json::to_value(u) {
+412 | |                 msg_obj["from"] = u_val;
+413 | |             }
+414 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+410 ~         if let Some(u) = bot_user
+411 ~             && let Ok(u_val) = serde_json::to_value(u) {
+412 |                 msg_obj["from"] = u_val;
+413 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/client/engine.rs:868:9
+    |
+868 | /         if self.local_mode {
+869 | |             if let Some(cached) = self.storage.get_cached_file(&req.file_id).await {
+870 | |                 if let Some(ref p) = cached.file_path {
+871 | |                     let check_path = if Path::new(p).is_absolute() {
+...   |
+884 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+868 ~         if self.local_mode
+869 ~             && let Some(cached) = self.storage.get_cached_file(&req.file_id).await {
+870 |                 if let Some(ref p) = cached.file_path {
+...
+882 |                 }
+883 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/client/engine.rs:869:13
+    |
+869 | /             if let Some(cached) = self.storage.get_cached_file(&req.file_id).await {
+870 | |                 if let Some(ref p) = cached.file_path {
+871 | |                     let check_path = if Path::new(p).is_absolute() {
+872 | |                         PathBuf::from(p)
+...   |
+883 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+869 ~             if let Some(cached) = self.storage.get_cached_file(&req.file_id).await
+870 ~                 && let Some(ref p) = cached.file_path {
+871 |                     let check_path = if Path::new(p).is_absolute() {
+...
+881 |                     }
+882 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/client/engine.rs:962:9
+    |
+962 | /         if !self.local_mode {
+963 | |             if let Some(size) = file.file_size {
+964 | |                 if size > 20 * 1024 * 1024 {
+965 | |                     return Err(TelegramError::BadRequest(
+...   |
+970 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+962 ~         if !self.local_mode
+963 ~             && let Some(size) = file.file_size {
+964 |                 if size > 20 * 1024 * 1024 {
+...
+968 |                 }
+969 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/client/engine.rs:963:13
+    |
+963 | /             if let Some(size) = file.file_size {
+964 | |                 if size > 20 * 1024 * 1024 {
+965 | |                     return Err(TelegramError::BadRequest(
+966 | |                         "Bad Request: file is too big".to_string(),
+...   |
+969 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+963 ~             if let Some(size) = file.file_size
+964 ~                 && size > 20 * 1024 * 1024 {
+965 |                     return Err(TelegramError::BadRequest(
+966 |                         "Bad Request: file is too big".to_string(),
+967 |                     ));
+968 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:972:9
+     |
+ 972 | /         if self.local_mode {
+ 973 | |             if let Some(ref remote_path) = file.file_path {
+ 974 | |                 let bot_folder = Self::bot_dir_name(token);
+ 975 | |                 let target_dir = self.dir.join(bot_folder);
+...    |
+1020 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+ 972 ~         if self.local_mode
+ 973 ~             && let Some(ref remote_path) = file.file_path {
+ 974 |                 let bot_folder = Self::bot_dir_name(token);
+ ...
+1018 |                 }
+1019 ~             }
+     |
+
+warning: this `if` statement can be collapsed
+   --> src/client/engine.rs:984:21
+    |
+984 | /                     if let Ok(mut dl_resp) = self.client.get(&dl_url).send().await {
+985 | |                         if dl_resp.status().is_success() {
+986 | |                             if let Ok(out_file) = fs::File::create(&target_file).await {
+987 | |                                 let mut writer =
+...   |
+997 | |                     }
+    | |_____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+984 ~                     if let Ok(mut dl_resp) = self.client.get(&dl_url).send().await
+985 ~                         && dl_resp.status().is_success() {
+986 |                             if let Ok(out_file) = fs::File::create(&target_file).await {
+...
+995 |                             }
+996 ~                         }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/client/engine.rs:985:25
+    |
+985 | /                         if dl_resp.status().is_success() {
+986 | |                             if let Ok(out_file) = fs::File::create(&target_file).await {
+987 | |                                 let mut writer =
+988 | |                                     tokio::io::BufWriter::with_capacity(STREAM_BUFFER_SIZE, out_file);
+...   |
+996 | |                         }
+    | |_________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+985 ~                         if dl_resp.status().is_success()
+986 ~                             && let Ok(out_file) = fs::File::create(&target_file).await {
+987 |                                 let mut writer =
+...
+994 |                                 let _ = writer.flush().await;
+995 ~                             }
+    |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1241:9
+     |
+1241 | /         if self.local_mode {
+1242 | |             if let Some(wh) = self.storage.get_webhook(token).await {
+1243 | |                 if super::webhook::should_restore(true, &wh.url) {
+1244 | |                     let (pending, err_date, err_msg) = self
+...    |
+1262 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1241 ~         if self.local_mode
+1242 ~             && let Some(wh) = self.storage.get_webhook(token).await {
+1243 |                 if super::webhook::should_restore(true, &wh.url) {
+ ...
+1260 |                 }
+1261 ~             }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1242:13
+     |
+1242 | /             if let Some(wh) = self.storage.get_webhook(token).await {
+1243 | |                 if super::webhook::should_restore(true, &wh.url) {
+1244 | |                     let (pending, err_date, err_msg) = self
+1245 | |                         .webhook_states
+...    |
+1261 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1242 ~             if let Some(wh) = self.storage.get_webhook(token).await
+1243 ~                 && super::webhook::should_restore(true, &wh.url) {
+1244 |                     let (pending, err_date, err_msg) = self
+ ...
+1259 |                     });
+1260 ~                 }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1477:17
+     |
+1477 | /                 if let Ok(json) = serde_json::from_slice::<Value>(&body_bytes) {
+1478 | |                     if let Some(fid) = json.get("file_id").and_then(|v| v.as_str()) {
+1479 | |                         file_id = fid.to_string();
+1480 | |                     }
+1481 | |                 }
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1477 ~                 if let Ok(json) = serde_json::from_slice::<Value>(&body_bytes)
+1478 ~                     && let Some(fid) = json.get("file_id").and_then(|v| v.as_str()) {
+1479 |                         file_id = fid.to_string();
+1480 ~                     }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1482:17
+     |
+1482 | /                 if file_id.is_empty() {
+1483 | |                     if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
+1484 | |                         for pair in body_str.split('&') {
+1485 | |                             if let Some((k, v)) = pair.split_once('=') {
+...    |
+1493 | |                 }
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1482 ~                 if file_id.is_empty()
+1483 ~                     && let Ok(body_str) = std::str::from_utf8(&body_bytes) {
+1484 |                         for pair in body_str.split('&') {
+ ...
+1491 |                         }
+1492 ~                     }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1485:29
+     |
+1485 | / ...                   if let Some((k, v)) = pair.split_once('=') {
+1486 | | ...                       if k == "file_id" {
+1487 | | ...                           file_id = v.to_string();
+1488 | | ...                           break;
+1489 | | ...                       }
+1490 | | ...                   }
+     | |_______________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1485 ~                             if let Some((k, v)) = pair.split_once('=')
+1486 ~                                 && k == "file_id" {
+1487 |                                     file_id = v.to_string();
+1488 |                                     break;
+1489 ~                                 }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1561:9
+     |
+1561 | /         if may_have_local_media {
+1562 | |             if let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(&body_bytes) {
+1563 | |                 if method_lower == "sendmediagroup" {
+1564 | |                     if let Some(Value::Array(items)) = map.get("media") {
+...    |
+1727 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1561 ~         if may_have_local_media
+1562 ~             && let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(&body_bytes) {
+1563 |                 if method_lower == "sendmediagroup" {
+ ...
+1725 |                 }
+1726 ~             }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1563:17
+     |
+1563 | /                 if method_lower == "sendmediagroup" {
+1564 | |                     if let Some(Value::Array(items)) = map.get("media") {
+1565 | |                         let mut new_items = items.clone();
+1566 | |                         let mut parts_to_add: Vec<(String, PathBuf)> = Vec::new();
+...    |
+1602 | |                 }
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1563 ~                 if method_lower == "sendmediagroup"
+1564 ~                     && let Some(Value::Array(items)) = map.get("media") {
+1565 |                         let mut new_items = items.clone();
+ ...
+1600 |                         }
+1601 ~                     }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1568:29
+     |
+1568 | / ...                   if let Some(m_str) = it.get("media").and_then(|v| v.as_str()) {
+1569 | | ...                       if let Some(local_p) = self.resolve_local_path(m_str) {
+1570 | | ...                           let attach_name = format!("file_{idx}");
+1571 | | ...                           it["media"] = Value::String(format!("attach://{attach_name}"));
+...    |
+1574 | | ...                   }
+     | |_______________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1568 ~                             if let Some(m_str) = it.get("media").and_then(|v| v.as_str())
+1569 ~                                 && let Some(local_p) = self.resolve_local_path(m_str) {
+1570 |                                     let attach_name = format!("file_{idx}");
+1571 |                                     it["media"] = Value::String(format!("attach://{attach_name}"));
+1572 |                                     parts_to_add.push((attach_name, local_p));
+1573 ~                                 }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1604:17
+     |
+1604 | /                 if method_lower == "editmessagemedia" {
+1605 | |                     if let Some(Value::Object(mut item)) = map.get("media").cloned() {
+1606 | |                         if let Some(m_str) = item.get("media").and_then(|v| v.as_str()) {
+1607 | |                             if let Some(local_p) = self.resolve_local_path(m_str) {
+...    |
+1632 | |                 }
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1604 ~                 if method_lower == "editmessagemedia"
+1605 ~                     && let Some(Value::Object(mut item)) = map.get("media").cloned() {
+1606 |                         if let Some(m_str) = item.get("media").and_then(|v| v.as_str()) {
+ ...
+1630 |                         }
+1631 ~                     }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1605:21
+     |
+1605 | /                     if let Some(Value::Object(mut item)) = map.get("media").cloned() {
+1606 | |                         if let Some(m_str) = item.get("media").and_then(|v| v.as_str()) {
+1607 | |                             if let Some(local_p) = self.resolve_local_path(m_str) {
+1608 | |                                 item.insert("media".to_string(), Value::String("attach://file_edit".to_string()));
+...    |
+1631 | |                     }
+     | |_____________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1605 ~                     if let Some(Value::Object(mut item)) = map.get("media").cloned()
+1606 ~                         && let Some(m_str) = item.get("media").and_then(|v| v.as_str()) {
+1607 |                             if let Some(local_p) = self.resolve_local_path(m_str) {
+ ...
+1629 |                             }
+1630 ~                         }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1606:25
+     |
+1606 | /                         if let Some(m_str) = item.get("media").and_then(|v| v.as_str()) {
+1607 | |                             if let Some(local_p) = self.resolve_local_path(m_str) {
+1608 | |                                 item.insert("media".to_string(), Value::String("attach://file_edit".to_string()));
+1609 | |                                 let part = Self::build_streaming_part(&local_p, "media.bin").await?;
+...    |
+1630 | |                         }
+     | |_________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1606 ~                         if let Some(m_str) = item.get("media").and_then(|v| v.as_str())
+1607 ~                             && let Some(local_p) = self.resolve_local_path(m_str) {
+1608 |                                 item.insert("media".to_string(), Value::String("attach://file_edit".to_string()));
+ ...
+1628 |                                 return Ok(out);
+1629 ~                             }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1753:28
+     |
+1753 |                       } else if val.starts_with("http://") || val.starts_with("https://") {
+     |  ____________________________^
+1754 | |                         if let Some(res) = self
+1755 | |                             .maybe_upload_large_remote_url_mtproto(token, method, &chat_id_str, val, caption)
+1756 | |                             .await
+...    |
+1760 | |                     }
+     | |_____________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1753 ~                     } else if (val.starts_with("http://") || val.starts_with("https://")) {
+1754 ~                         && let Some(res) = self
+1755 |                             .maybe_upload_large_remote_url_mtproto(token, method, &chat_id_str, val, caption)
+ ...
+1758 |                             return res;
+1759 ~                         }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/client/engine.rs:1881:5
+     |
+1881 | /     if let Some((rem, modulo)) = filter {
+1882 | |         if modulo != 0 && (id as u64 % modulo) != rem {
+1883 | |             return Err(forbidden());
+1884 | |         }
+1885 | |     }
+     | |_____^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1881 ~     if let Some((rem, modulo)) = filter
+1882 ~         && modulo != 0 && (id as u64 % modulo) != rem {
+1883 |             return Err(forbidden());
+1884 ~         }
+     |
+
+warning: this `if` statement can be collapsed
+  --> src/client/manager.rs:39:9
+   |
+39 | /         if let Some(session) = self.sessions.get(token) {
+40 | |             if session.created.elapsed() < SESSION_TTL {
+41 | |                 return Ok(Arc::clone(session.value()));
+42 | |             }
+43 | |         }
+   | |_________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+39 ~         if let Some(session) = self.sessions.get(token)
+40 ~             && session.created.elapsed() < SESSION_TTL {
+41 |                 return Ok(Arc::clone(session.value()));
+42 ~             }
+   |
+
+warning: this `if` statement can be collapsed
+   --> src/error.rs:143:9
+    |
+143 | /         if let Some(ref p) = params {
+144 | |             if let Some(retry_after) = p.retry_after {
+145 | |                 if let Ok(val) = retry_after.to_string().parse() {
+146 | |                     response.headers_mut().insert(axum::http::header::RETRY_AFTER, val);
+...   |
+149 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+143 ~         if let Some(ref p) = params
+144 ~             && let Some(retry_after) = p.retry_after {
+145 |                 if let Ok(val) = retry_after.to_string().parse() {
+146 |                     response.headers_mut().insert(axum::http::header::RETRY_AFTER, val);
+147 |                 }
+148 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/error.rs:144:13
+    |
+144 | /             if let Some(retry_after) = p.retry_after {
+145 | |                 if let Ok(val) = retry_after.to_string().parse() {
+146 | |                     response.headers_mut().insert(axum::http::header::RETRY_AFTER, val);
+147 | |                 }
+148 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+144 ~             if let Some(retry_after) = p.retry_after
+145 ~                 && let Ok(val) = retry_after.to_string().parse() {
+146 |                     response.headers_mut().insert(axum::http::header::RETRY_AFTER, val);
+147 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/handlers/files.rs:107:5
+    |
+107 | /     if !state.config.local_mode {
+108 | |         if let Some(local_path) = state.engine.resolve_file_on_disk(clean_token, &file_path) {
+109 | |             if let Ok(meta) = tokio::fs::metadata(&local_path).await {
+110 | |                 if meta.len() > 20 * 1024 * 1024 {
+...   |
+115 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+107 ~     if !state.config.local_mode
+108 ~         && let Some(local_path) = state.engine.resolve_file_on_disk(clean_token, &file_path) {
+109 |             if let Ok(meta) = tokio::fs::metadata(&local_path).await {
+...
+113 |             }
+114 ~         }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/handlers/files.rs:108:9
+    |
+108 | /         if let Some(local_path) = state.engine.resolve_file_on_disk(clean_token, &file_path) {
+109 | |             if let Ok(meta) = tokio::fs::metadata(&local_path).await {
+110 | |                 if meta.len() > 20 * 1024 * 1024 {
+111 | |                     return Err(TelegramError::BadRequest("Bad Request: file is too big".to_string()));
+...   |
+114 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+108 ~         if let Some(local_path) = state.engine.resolve_file_on_disk(clean_token, &file_path)
+109 ~             && let Ok(meta) = tokio::fs::metadata(&local_path).await {
+110 |                 if meta.len() > 20 * 1024 * 1024 {
+111 |                     return Err(TelegramError::BadRequest("Bad Request: file is too big".to_string()));
+112 |                 }
+113 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/handlers/files.rs:109:13
+    |
+109 | /             if let Ok(meta) = tokio::fs::metadata(&local_path).await {
+110 | |                 if meta.len() > 20 * 1024 * 1024 {
+111 | |                     return Err(TelegramError::BadRequest("Bad Request: file is too big".to_string()));
+112 | |                 }
+113 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+109 ~             if let Ok(meta) = tokio::fs::metadata(&local_path).await
+110 ~                 && meta.len() > 20 * 1024 * 1024 {
+111 |                     return Err(TelegramError::BadRequest("Bad Request: file is too big".to_string()));
+112 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/handlers/files.rs:118:5
+    |
+118 | /     if let Some(local_path) = state.engine.resolve_file_on_disk(clean_token, &file_path) {
+119 | |         if let Ok(mut f) = TokioFile::open(&local_path).await {
+120 | |             if let Ok(meta) = f.metadata().await {
+121 | |                 let total_size = meta.len();
+...   |
+190 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+118 ~     if let Some(local_path) = state.engine.resolve_file_on_disk(clean_token, &file_path)
+119 ~         && let Ok(mut f) = TokioFile::open(&local_path).await {
+120 |             if let Ok(meta) = f.metadata().await {
+...
+188 |             }
+189 ~         }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/handlers/files.rs:119:9
+    |
+119 | /         if let Ok(mut f) = TokioFile::open(&local_path).await {
+120 | |             if let Ok(meta) = f.metadata().await {
+121 | |                 let total_size = meta.len();
+...   |
+189 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+119 ~         if let Ok(mut f) = TokioFile::open(&local_path).await
+120 ~             && let Ok(meta) = f.metadata().await {
+121 |                 let total_size = meta.len();
+...
+187 |                 return Ok((resp_headers, body).into_response());
+188 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/handlers/files.rs:123:17
+    |
+123 | /                 if let Some(range_header) = req_headers.get(header::RANGE) {
+124 | |                     if let Ok(range_str) = range_header.to_str() {
+125 | |                         if let Some(spec) = range_str.strip_prefix("bytes=") {
+126 | |                             let parts: Vec<&str> = spec.split('-').collect();
+...   |
+182 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+123 ~                 if let Some(range_header) = req_headers.get(header::RANGE)
+124 ~                     && let Ok(range_str) = range_header.to_str() {
+125 |                         if let Some(spec) = range_str.strip_prefix("bytes=") {
+...
+180 |                         }
+181 ~                     }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/handlers/files.rs:124:21
+    |
+124 | /                     if let Ok(range_str) = range_header.to_str() {
+125 | |                         if let Some(spec) = range_str.strip_prefix("bytes=") {
+126 | |                             let parts: Vec<&str> = spec.split('-').collect();
+127 | |                             if parts.len() == 2 {
+...   |
+181 | |                     }
+    | |_____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+124 ~                     if let Ok(range_str) = range_header.to_str()
+125 ~                         && let Some(spec) = range_str.strip_prefix("bytes=") {
+126 |                             let parts: Vec<&str> = spec.split('-').collect();
+...
+179 |                             }
+180 ~                         }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/handlers/files.rs:198:5
+    |
+198 | /     if !state.config.local_mode {
+199 | |         if let Some(len) = content_len {
+200 | |             if len > 20 * 1024 * 1024 {
+201 | |                 return Err(TelegramError::BadRequest("Bad Request: file is too big".to_string()));
+...   |
+204 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+198 ~     if !state.config.local_mode
+199 ~         && let Some(len) = content_len {
+200 |             if len > 20 * 1024 * 1024 {
+201 |                 return Err(TelegramError::BadRequest("Bad Request: file is too big".to_string()));
+202 |             }
+203 ~         }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/handlers/files.rs:199:9
+    |
+199 | /         if let Some(len) = content_len {
+200 | |             if len > 20 * 1024 * 1024 {
+201 | |                 return Err(TelegramError::BadRequest("Bad Request: file is too big".to_string()));
+202 | |             }
+203 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+199 ~         if let Some(len) = content_len
+200 ~             && len > 20 * 1024 * 1024 {
+201 |                 return Err(TelegramError::BadRequest("Bad Request: file is too big".to_string()));
+202 ~             }
+    |
+
+warning: manual implementation of `.is_multiple_of()`
+  --> src/mtproto/crypto/factorize.rs:28:12
+   |
+28 |         if n % p == 0 {
+   |            ^^^^^^^^^^ help: replace with: `n.is_multiple_of(p)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_is_multiple_of
+   = note: `#[warn(clippy::manual_is_multiple_of)]` on by default
+
+warning: manual implementation of `.is_multiple_of()`
+  --> src/mtproto/crypto/factorize.rs:34:11
+   |
+34 |     while d % 2 == 0 {
+   |           ^^^^^^^^^^ help: replace with: `d.is_multiple_of(2)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_is_multiple_of
+
+warning: manual `!Range::contains` implementation
+  --> src/mtproto/crypto/factorize.rs:62:8
+   |
+62 |     if pq < 4 || pq >= (1u64 << 63) || is_prime_u64(pq) {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use: `!(4..(1u64 << 63)).contains(&pq)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_range_contains
+   = note: `#[warn(clippy::manual_range_contains)]` on by default
+
+warning: manual implementation of `.is_multiple_of()`
+  --> src/mtproto/crypto/factorize.rs:79:12
+   |
+79 |         if pq % t == 0 {
+   |            ^^^^^^^^^^^ help: replace with: `pq.is_multiple_of(t)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_is_multiple_of
+
+warning: manual implementation of `.is_multiple_of()`
+  --> src/mtproto/crypto/ige.rs:24:12
+   |
+24 |         if plaintext.len() % 16 != 0 {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!plaintext.len().is_multiple_of(16)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_is_multiple_of
+
+warning: using `chunks_exact` with a constant chunk size
+  --> src/mtproto/crypto/ige.rs:35:42
+   |
+35 |         let mut plain_chunks = plaintext.chunks_exact(16);
+   |                                          ^^^^^^^^^^^^^^^^
+   |
+help: consider using `as_chunks::<16>()` instead
+  --> src/mtproto/crypto/ige.rs:35:42
+   |
+35 |         let mut plain_chunks = plaintext.chunks_exact(16);
+   |                                          ^^^^^^^^^^^^^^^^
+   = note: you can access the chunks using `plain_chunks.0.iter()`, and the remainder using `plain_chunks.1`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#chunks_exact_to_as_chunks
+   = note: `#[warn(clippy::chunks_exact_to_as_chunks)]` on by default
+
+warning: using `chunks_exact_mut` with a constant chunk size
+  --> src/mtproto/crypto/ige.rs:36:44
+   |
+36 |         let mut cipher_chunks = ciphertext.chunks_exact_mut(16);
+   |                                            ^^^^^^^^^^^^^^^^^^^^
+   |
+help: consider using `as_chunks_mut::<16>()` instead
+  --> src/mtproto/crypto/ige.rs:36:44
+   |
+36 |         let mut cipher_chunks = ciphertext.chunks_exact_mut(16);
+   |                                            ^^^^^^^^^^^^^^^^^^^^
+   = note: you can access the chunks using `cipher_chunks.0.iter_mut()`, and the remainder using `cipher_chunks.1`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#chunks_exact_to_as_chunks
+
+warning: manual implementation of `.is_multiple_of()`
+  --> src/mtproto/crypto/ige.rs:67:12
+   |
+67 |         if ciphertext.len() % 16 != 0 {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!ciphertext.len().is_multiple_of(16)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_is_multiple_of
+
+warning: using `chunks_exact` with a constant chunk size
+  --> src/mtproto/crypto/ige.rs:77:44
+   |
+77 |         let mut cipher_chunks = ciphertext.chunks_exact(16);
+   |                                            ^^^^^^^^^^^^^^^^
+   |
+help: consider using `as_chunks::<16>()` instead
+  --> src/mtproto/crypto/ige.rs:77:44
+   |
+77 |         let mut cipher_chunks = ciphertext.chunks_exact(16);
+   |                                            ^^^^^^^^^^^^^^^^
+   = note: you can access the chunks using `cipher_chunks.0.iter()`, and the remainder using `cipher_chunks.1`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#chunks_exact_to_as_chunks
+
+warning: using `chunks_exact_mut` with a constant chunk size
+  --> src/mtproto/crypto/ige.rs:78:42
+   |
+78 |         let mut plain_chunks = plaintext.chunks_exact_mut(16);
+   |                                          ^^^^^^^^^^^^^^^^^^^^
+   |
+help: consider using `as_chunks_mut::<16>()` instead
+  --> src/mtproto/crypto/ige.rs:78:42
+   |
+78 |         let mut plain_chunks = plaintext.chunks_exact_mut(16);
+   |                                          ^^^^^^^^^^^^^^^^^^^^
+   = note: you can access the chunks using `plain_chunks.0.iter_mut()`, and the remainder using `plain_chunks.1`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#chunks_exact_to_as_chunks
+
+warning: the borrowed expression implements the required traits
+  --> src/mtproto/crypto/rsa.rs:78:23
+   |
+78 |         hasher.update(&temp_key);
+   |                       ^^^^^^^^^ help: change this to: `temp_key`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#needless_borrows_for_generic_args
+   = note: `#[warn(clippy::needless_borrows_for_generic_args)]` on by default
+
+warning: the borrowed expression implements the required traits
+  --> src/mtproto/crypto/rsa.rs:79:23
+   |
+79 |         hasher.update(&data_padded);
+   |                       ^^^^^^^^^^^^ help: change this to: `data_padded`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#needless_borrows_for_generic_args
+
+warning: this `if` statement can be collapsed
+   --> src/mtproto/downloader.rs:256:5
+    |
+256 | /     if target_path.exists() {
+257 | |         if let Ok(meta) = fs::metadata(&target_path).await {
+258 | |             if meta.len() > 0 {
+259 | |                 return Ok((target_path, meta.len()));
+...   |
+262 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+256 ~     if target_path.exists()
+257 ~         && let Ok(meta) = fs::metadata(&target_path).await {
+258 |             if meta.len() > 0 {
+259 |                 return Ok((target_path, meta.len()));
+260 |             }
+261 ~         }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/mtproto/downloader.rs:257:9
+    |
+257 | /         if let Ok(meta) = fs::metadata(&target_path).await {
+258 | |             if meta.len() > 0 {
+259 | |                 return Ok((target_path, meta.len()));
+260 | |             }
+261 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+257 ~         if let Ok(meta) = fs::metadata(&target_path).await
+258 ~             && meta.len() > 0 {
+259 |                 return Ok((target_path, meta.len()));
+260 ~             }
+    |
+
+warning: this can be `std::io::Error::other(_)`
+   --> src/mtproto/downloader.rs:284:36
+    |
+284 |                         return Err(Error::new(ErrorKind::Other, format!("Too many DC migrations: {}", err_msg)));
+    |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#io_other_error
+    = note: `#[warn(clippy::io_other_error)]` on by default
+help: use `std::io::Error::other`
+    |
+284 -                         return Err(Error::new(ErrorKind::Other, format!("Too many DC migrations: {}", err_msg)));
+284 +                         return Err(Error::other(format!("Too many DC migrations: {}", err_msg)));
+    |
+
+warning: this can be `std::io::Error::other(_)`
+   --> src/mtproto/downloader.rs:506:34
+    |
+506 |                 first_err = Some(Error::new(ErrorKind::Other, format!("Worker panicked: {e}")));
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#io_other_error
+help: use `std::io::Error::other`
+    |
+506 -                 first_err = Some(Error::new(ErrorKind::Other, format!("Worker panicked: {e}")));
+506 +                 first_err = Some(Error::other(format!("Worker panicked: {e}")));
+    |
+
+warning: this can be `std::io::Error::other(_)`
+   --> src/mtproto/downloader.rs:532:24
+    |
+532 |             return Err(Error::new(ErrorKind::Other, format!("Writer panicked: {e}")));
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#io_other_error
+help: use `std::io::Error::other`
+    |
+532 -             return Err(Error::new(ErrorKind::Other, format!("Writer panicked: {e}")));
+532 +             return Err(Error::other(format!("Writer panicked: {e}")));
+    |
+
+warning: equality checks against false can be replaced by a negation
+   --> src/mtproto/handshake.rs:102:28
+    |
+102 |     if p.bits() != 2048 || p.bit(0) == false {
+    |                            ^^^^^^^^^^^^^^^^^ help: try: `!p.bit(0)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#bool_comparison
+    = note: `#[warn(clippy::bool_comparison)]` on by default
+
+warning: this can be `std::io::Error::other(_)`
+   --> src/mtproto/handshake.rs:301:26
+    |
+301 |             .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#io_other_error
+help: use `std::io::Error::other`
+    |
+301 -             .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+301 +             .map_err(|e| Error::other(e.to_string()))?;
+    |
+
+warning: manual implementation of `.is_multiple_of()`
+  --> src/mtproto/packet.rs:47:8
+   |
+47 |     if (current_len + padding_len) % AES_BLOCK_SIZE != 0 {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!(current_len + padding_len).is_multiple_of(AES_BLOCK_SIZE)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_is_multiple_of
+
+warning: manual implementation of `.is_multiple_of()`
+   --> src/mtproto/packet.rs:108:8
+    |
+108 |     if (packet.len() - 24) % 16 != 0 {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!(packet.len() - 24).is_multiple_of(16)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_is_multiple_of
+
+warning: needlessly taken reference of left operand
+   --> src/mtproto/packet.rs:120:8
+    |
+120 |     if &hash[8..24] != msg_key {
+    |        ------------^^^^^^^^^^^
+    |        |
+    |        help: use the left value directly: `hash[8..24]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#op_ref
+    = note: `#[warn(clippy::op_ref)]` on by default
+
+warning: manual implementation of `.is_multiple_of()`
+   --> src/mtproto/packet.rs:142:8
+    |
+142 |     if data_len % 4 != 0 || plaintext.len() < 32 + data_len {
+    |        ^^^^^^^^^^^^^^^^^ help: replace with: `!data_len.is_multiple_of(4)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_is_multiple_of
+
+warning: this `if` statement can be collapsed
+   --> src/mtproto/uploader.rs:142:9
+    |
+142 | /         if let Some(cached) = auth_cache().get(&cache_key).map(|r| *r.value()) {
+143 | |             if let Ok(conn) = Self::connect_with_auth(cached, api_id).await {
+144 | |                 return Ok(conn);
+145 | |             }
+146 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+142 ~         if let Some(cached) = auth_cache().get(&cache_key).map(|r| *r.value())
+143 ~             && let Ok(conn) = Self::connect_with_auth(cached, api_id).await {
+144 |                 return Ok(conn);
+145 ~             }
+    |
+
+warning: this can be `std::io::Error::other(_)`
+   --> src/mtproto/uploader.rs:186:13
+    |
+186 |           Err(Error::new(
+    |  _____________^
+187 | |             ErrorKind::Other,
+188 | |             "Exceeded maximum attempts during bot authorization on home DC",
+189 | |         ))
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#io_other_error
+help: use `std::io::Error::other`
+    |
+186 ~         Err(Error::other(
+187 ~             "Exceeded maximum attempts during bot authorization on home DC",
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/mtproto/uploader.rs:262:9
+    |
+262 | /         if let Some(cached) = auth_cache().get(&cache_key).map(|r| *r.value()) {
+263 | |             if let Ok(conn) = Self::connect_with_auth(cached, api_id).await {
+264 | |                 return Ok(conn);
+265 | |             }
+266 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+262 ~         if let Some(cached) = auth_cache().get(&cache_key).map(|r| *r.value())
+263 ~             && let Ok(conn) = Self::connect_with_auth(cached, api_id).await {
+264 |                 return Ok(conn);
+265 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/mtproto/uploader.rs:454:25
+    |
+454 | /                         if let Some(pos) = expected_ids.iter().position(|&id| id == ans_req_id) {
+455 | |                             if collected[pos].is_none() {
+456 | |                                 collected[pos] = Some(data);
+457 | |                                 remaining -= 1;
+458 | |                             }
+459 | |                         }
+    | |_________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+454 ~                         if let Some(pos) = expected_ids.iter().position(|&id| id == ans_req_id)
+455 ~                             && collected[pos].is_none() {
+456 |                                 collected[pos] = Some(data);
+457 |                                 remaining -= 1;
+458 ~                             }
+    |
+
+warning: this can be `std::io::Error::other(_)`
+   --> src/mtproto/uploader.rs:485:26
+    |
+485 |             .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#io_other_error
+help: use `std::io::Error::other`
+    |
+485 -             .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+485 +             .map_err(|e| Error::other(e.to_string()))?;
+    |
+
+warning: this can be `std::io::Error::other(_)`
+   --> src/mtproto/uploader.rs:566:33
+    |
+566 |   ...                   Err(Error::new(
+    |  ___________________________^
+567 | | ...                       ErrorKind::Other,
+568 | | ...                       format!("MTProto RPC Error {}: {}", code, msg),
+569 | | ...                   )),
+    | |_______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#io_other_error
+help: use `std::io::Error::other`
+    |
+566 ~                             Err(Error::other(
+567 ~                                 format!("MTProto RPC Error {}: {}", code, msg),
+    |
+
+warning: this can be `std::io::Error::other(_)`
+   --> src/mtproto/uploader.rs:597:41
+    |
+597 |   ...                   Err(Error::new(
+    |  ___________________________^
+598 | | ...                       ErrorKind::Other,
+599 | | ...                       format!("MTProto RPC Error {}: {}", code, msg),
+600 | | ...                   )),
+    | |_______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#io_other_error
+help: use `std::io::Error::other`
+    |
+597 ~                                     Err(Error::other(
+598 ~                                         format!("MTProto RPC Error {}: {}", code, msg),
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/mtproto/uploader.rs:677:9
+    |
+677 | /         if !clean_uname.is_empty() {
+678 | |             if let Ok(peer) = resolve_username_mtproto(conn, clean_uname).await {
+679 | |                 return Ok(peer);
+680 | |             }
+681 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+677 ~         if !clean_uname.is_empty()
+678 ~             && let Ok(peer) = resolve_username_mtproto(conn, clean_uname).await {
+679 |                 return Ok(peer);
+680 ~             }
+    |
+
+warning: this function has too many arguments (8/7)
+   --> src/mtproto/uploader.rs:911:1
+    |
+911 | / pub async fn upload_and_send_large_file(
+912 | |     api_id: i32,
+913 | |     api_hash: &str,
+914 | |     bot_token: &str,
+...   |
+919 | |     custom_file_name: Option<&str>,
+920 | | ) -> Result<UploadedMediaResult, Error> {
+    | |_______________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (9/7)
+   --> src/mtproto/uploader.rs:936:1
+    |
+936 | / pub async fn upload_and_send_large_file_typed(
+937 | |     api_id: i32,
+938 | |     api_hash: &str,
+939 | |     bot_token: &str,
+...   |
+945 | |     media_attrs: MediaAttrs,
+946 | | ) -> Result<UploadedMediaResult, Error> {
+    | |_______________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#too_many_arguments
+
+warning: manually reimplementing `div_ceil`
+   --> src/mtproto/uploader.rs:952:8
+    |
+952 |     if (file_size + PART_SIZE - 1) / PART_SIZE > MAX_UPLOAD_PARTS {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `file_size.div_ceil(PART_SIZE)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_div_ceil
+    = note: `#[warn(clippy::manual_div_ceil)]` on by default
+
+warning: manually reimplementing `div_ceil`
+   --> src/mtproto/uploader.rs:988:23
+    |
+988 |     let total_parts = (file_size + PART_SIZE - 1) / PART_SIZE;
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `file_size.div_ceil(PART_SIZE)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_div_ceil
+
+warning: this can be `std::io::Error::other(_)`
+    --> src/mtproto/uploader.rs:1067:36
+     |
+1067 |                           return Err(Error::new(
+     |  ____________________________________^
+1068 | |                             ErrorKind::Other,
+1069 | |                             format!("upload part returned non-true result (0x{:08x})", bool_ctor),
+1070 | |                         ));
+     | |_________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#io_other_error
+help: use `std::io::Error::other`
+     |
+1067 ~                         return Err(Error::other(
+1068 ~                             format!("upload part returned non-true result (0x{:08x})", bool_ctor),
+     |
+
+warning: this can be `std::io::Error::other(_)`
+    --> src/mtproto/uploader.rs:1088:34
+     |
+1088 |                 first_err = Some(Error::new(ErrorKind::Other, format!("Upload worker panicked: {}", e)));
+     |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#io_other_error
+help: use `std::io::Error::other`
+     |
+1088 -                 first_err = Some(Error::new(ErrorKind::Other, format!("Upload worker panicked: {}", e)));
+1088 +                 first_err = Some(Error::other(format!("Upload worker panicked: {}", e)));
+     |
+
+warning: this can be `std::io::Error::other(_)`
+    --> src/mtproto/uploader.rs:1144:17
+     |
+1144 | /                 Error::new(
+1145 | |                     ErrorKind::Other,
+1146 | |                     format!("MTProto sendMedia failed: {} (retry failed: {})", e, e2),
+1147 | |                 )
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#io_other_error
+help: use `std::io::Error::other`
+     |
+1144 ~                 Error::other(
+1145 ~                     format!("MTProto sendMedia failed: {} (retry failed: {})", e, e2),
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/mtproto/uploader.rs:1192:13
+     |
+1192 | /             if read_bytes(&mut cur).is_ok() {
+1193 | |                 if let Ok(d) = read_int(&mut cur) {
+1194 | |                     if d > 1_600_000_000 {
+1195 | |                         date = d as i64;
+...    |
+1198 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1192 ~             if read_bytes(&mut cur).is_ok()
+1193 ~                 && let Ok(d) = read_int(&mut cur) {
+1194 |                     if d > 1_600_000_000 {
+1195 |                         date = d as i64;
+1196 |                     }
+1197 ~                 }
+     |
+
+warning: this `if` statement can be collapsed
+    --> src/mtproto/uploader.rs:1193:17
+     |
+1193 | /                 if let Ok(d) = read_int(&mut cur) {
+1194 | |                     if d > 1_600_000_000 {
+1195 | |                         date = d as i64;
+1196 | |                     }
+1197 | |                 }
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1193 ~                 if let Ok(d) = read_int(&mut cur)
+1194 ~                     && d > 1_600_000_000 {
+1195 |                         date = d as i64;
+1196 ~                     }
+     |
+
+warning: this `repeat().take()` can be written more concisely
+    --> src/mtproto/uploader.rs:1388:45
+     |
+1388 | ...                   lens.extend(std::iter::repeat(prev).take(rep));
+     |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `repeat_n()` instead: `std::iter::repeat_n(prev, rep)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_repeat_n
+     = note: `#[warn(clippy::manual_repeat_n)]` on by default
+
+warning: this `repeat().take()` can be written more concisely
+    --> src/mtproto/uploader.rs:1392:45
+     |
+1392 | ...                   lens.extend(std::iter::repeat(0).take(rep));
+     |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `repeat_n()` instead: `std::iter::repeat_n(0, rep)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_repeat_n
+
+warning: this `repeat().take()` can be written more concisely
+    --> src/mtproto/uploader.rs:1396:45
+     |
+1396 | ...                   lens.extend(std::iter::repeat(0).take(rep));
+     |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `repeat_n()` instead: `std::iter::repeat_n(0, rep)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_repeat_n
+
+warning: this `if` statement can be collapsed
+   --> src/storage.rs:166:9
+    |
+166 | /         if let Some(cached) = self.l1_bots.get(token) {
+167 | |             if Self::bot_fresh(cached.value().1, Self::now_unix()) {
+168 | |                 return Some(Arc::clone(&cached.value().0));
+169 | |             }
+170 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+166 ~         if let Some(cached) = self.l1_bots.get(token)
+167 ~             && Self::bot_fresh(cached.value().1, Self::now_unix()) {
+168 |                 return Some(Arc::clone(&cached.value().0));
+169 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/storage.rs:256:13
+    |
+256 | /             if let Ok(conn) = writer.lock() {
+257 | |                 if let Err(e) = conn.execute(
+258 | |                     "INSERT INTO bots (token, bot_id, username, first_name, user_json, updated_at)
+259 | |                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+...   |
+270 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+256 ~             if let Ok(conn) = writer.lock()
+257 ~                 && let Err(e) = conn.execute(
+258 |                     "INSERT INTO bots (token, bot_id, username, first_name, user_json, updated_at)
+...
+268 |                     tracing::error!("SQLite save bot failed: {e}");
+269 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/storage.rs:279:13
+    |
+279 | /             if let Some(ref p) = f.file_path {
+280 | |                 if Path::new(p).exists() {
+281 | |                     return Some(f);
+282 | |                 }
+283 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+279 ~             if let Some(ref p) = f.file_path
+280 ~                 && Path::new(p).exists() {
+281 |                     return Some(f);
+282 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/storage.rs:310:9
+    |
+310 | /         if let Some(ref p) = file_opt.file_path {
+311 | |             if Path::new(p).exists() {
+312 | |                 if self.l1_files.len() >= MAX_L1_CACHE_ENTRIES {
+313 | |                     self.l1_files.clear();
+...   |
+318 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+310 ~         if let Some(ref p) = file_opt.file_path
+311 ~             && Path::new(p).exists() {
+312 |                 if self.l1_files.len() >= MAX_L1_CACHE_ENTRIES {
+...
+316 |                 return Some(file_opt);
+317 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/storage.rs:342:13
+    |
+342 | /             if let Ok(conn) = writer.lock() {
+343 | |                 if let Err(e) = conn.execute(
+344 | |                     "INSERT INTO file_cache (file_id, file_unique_id, file_size, local_path, updated_at)
+345 | |                      VALUES (?1, ?2, ?3, ?4, ?5)
+...   |
+354 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+342 ~             if let Ok(conn) = writer.lock()
+343 ~                 && let Err(e) = conn.execute(
+344 |                     "INSERT INTO file_cache (file_id, file_unique_id, file_size, local_path, updated_at)
+...
+352 |                     tracing::error!("SQLite save cached file failed: {e}");
+353 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/storage.rs:378:13
+    |
+378 | /             if let Ok(conn) = writer.lock() {
+379 | |                 if let Err(e) = conn.execute(
+380 | |                     "INSERT INTO webhooks (token, url, secret_token, max_connections, allowed_updates, ip_address, updated_at)
+381 | |                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+...   |
+393 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+378 ~             if let Ok(conn) = writer.lock()
+379 ~                 && let Err(e) = conn.execute(
+380 |                     "INSERT INTO webhooks (token, url, secret_token, max_connections, allowed_updates, ip_address, updated_at)
+...
+391 |                     tracing::error!("SQLite save webhook failed: {e}");
+392 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/storage.rs:435:13
+    |
+435 | /             if let Ok(conn) = writer.lock() {
+436 | |                 if let Err(e) = conn.execute("DELETE FROM webhooks WHERE token = ?1", params![token_owned]) {
+437 | |                     tracing::error!("SQLite delete webhook failed: {e}");
+438 | |                 }
+439 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+435 ~             if let Ok(conn) = writer.lock()
+436 ~                 && let Err(e) = conn.execute("DELETE FROM webhooks WHERE token = ?1", params![token_owned]) {
+437 |                     tracing::error!("SQLite delete webhook failed: {e}");
+438 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/storage.rs:449:13
+    |
+449 | / ...   if let Ok(conn) = reader.lock() {
+450 | | ...       if let Ok(mut stmt) = conn.prepare("SELECT token, url, secret_token, max_connections, allowed_updates, ip_address FROM ...
+451 | | ...           if let Ok(rows) = stmt.query_map([], |row| {
+452 | | ...               let token: String = row.get(0)?;
+...   |
+472 | | ...   }
+    | |_______^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+449 ~             if let Ok(conn) = reader.lock()
+450 ~                 && let Ok(mut stmt) = conn.prepare("SELECT token, url, secret_token, max_connections, allowed_updates, ip_address FROM webhooks") {
+451 |                     if let Ok(rows) = stmt.query_map([], |row| {
+...
+470 |                     }
+471 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> src/storage.rs:450:17
+    |
+450 | / ...   if let Ok(mut stmt) = conn.prepare("SELECT token, url, secret_token, max_connections, allowed_updates, ip_address FROM webh...
+451 | | ...       if let Ok(rows) = stmt.query_map([], |row| {
+452 | | ...           let token: String = row.get(0)?;
+453 | | ...           let url: String = row.get(1)?;
+...   |
+471 | | ...   }
+    | |_______^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+450 ~                 if let Ok(mut stmt) = conn.prepare("SELECT token, url, secret_token, max_connections, allowed_updates, ip_address FROM webhooks")
+451 ~                     && let Ok(rows) = stmt.query_map([], |row| {
+452 |                         let token: String = row.get(0)?;
+...
+469 |                         }
+470 ~                     }
+    |
+
+warning: manual implementation of `.is_multiple_of()`
+  --> src/watchdog.rs:75:20
+   |
+75 |                 if ticks % 2 == 0 {
+   |                    ^^^^^^^^^^^^^^ help: replace with: `ticks.is_multiple_of(2)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.100.0/index.html#manual_is_multiple_of
+
+warning: `telegram-bot-api-rs` (bin "telegram-bot-api-rs") generated 91 warnings (run `cargo clippy --fix --bin "telegram-bot-api-rs" -p telegram-bot-api-rs -- ` to apply 84 suggestions)
+warning: `telegram-bot-api-rs` (bin "telegram-bot-api-rs" test) generated 91 warnings (91 duplicates)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.99s

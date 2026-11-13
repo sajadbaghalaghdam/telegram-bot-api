@@ -1,0 +1,3 @@
+case	updates	chats	delivered	seconds	updates_per_s	rss_kb_before	rss_kb_hwm	rss_kb_after10s	threads_after	fds_after	cpu_s
+many_chats	50000	200	50000	1.72	29001	9048	17440	16192	10	86	5.63
+single_chat	3000	1	3000	1.37	2197	9048	12204	11252	10	23	1.23

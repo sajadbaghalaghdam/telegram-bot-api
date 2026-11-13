@@ -1,0 +1,6 @@
+ 47.02% [kernel.kallsyms]
+ 37.30% server-bench 
+ 15.02% libc.so.6 
+ 0.46% [vdso] 
+ 0.18% libm.so.6 
+ 0.02% libgcc_s.so.1 
