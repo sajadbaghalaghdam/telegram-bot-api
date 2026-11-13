@@ -379,6 +379,46 @@ async fn local_mode_get_file_downloads_once_and_caches() {
     assert_eq!(up.requests().len(), 2, "second getFile is served from the cache");
 }
 
+/// Upstream whose file download is cut off after 10 of 100 bytes; getFile answers normally.
+async fn truncating_upstream() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(async move {
+        loop {
+            let (mut s, _) = l.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let resp = if head.starts_with("GET /file/") {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n0123456789".to_string()
+                } else {
+                    let body = r#"{"ok":true,"result":{"file_id":"abc","file_unique_id":"u","file_size":100,"file_path":"documents/f.bin"}}"#;
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                };
+                let _ = s.write_all(resp.as_bytes()).await;
+                let _ = s.shutdown().await;
+            });
+        }
+    });
+    url
+}
+
+#[tokio::test]
+async fn local_mode_interrupted_download_is_neither_served_nor_cached() {
+    let upstream_url = truncating_upstream().await;
+    let app = TestApp::start_at("truncated", true, &upstream_url).await;
+    let g = Got::from(app.http.get(format!("{}/bot{TOKEN}/getFile?file_id=abc", app.base)).send().await.unwrap()).await;
+    assert_eq!(g.status, 200);
+    // the client still gets the upstream (relative) path, not a local one
+    assert!(g.text().contains(r#""file_path":"documents/f.bin""#), "{}", g.text());
+    let docs = app.dir.join(TOKEN).join("documents");
+    let leftovers: Vec<_> = std::fs::read_dir(&docs).map(|d| d.filter_map(Result::ok).map(|e| e.file_name()).collect()).unwrap_or_default();
+    assert!(leftovers.is_empty(), "no partial file may remain: {leftovers:?}");
+    assert!(app.engine.storage.get_cached_file("abc").await.is_none());
+}
+
 #[tokio::test]
 async fn local_mode_json_with_local_path_becomes_multipart() {
     let up = echo_upstream().await;

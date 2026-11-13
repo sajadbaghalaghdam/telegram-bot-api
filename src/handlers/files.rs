@@ -91,11 +91,7 @@ pub async fn serve_file(
     resp_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
 
     // 1. A file on local disk (local mode only): served directly, with Range support.
-    if let Some(local_path) = state.engine.resolve_file_on_disk(token, file_path)
-        && let Ok(mut f) = tokio::fs::File::open(&local_path).await
-        && let Ok(meta) = f.metadata().await
-    {
-        let total = meta.len();
+    if let Some((mut f, total)) = state.engine.open_local_file(token, file_path).await {
         match parse_range(req_headers.get(header::RANGE), total) {
             ByteRange::Unsatisfiable => {
                 let mut err_headers = HeaderMap::new();

@@ -99,24 +99,30 @@ async fn handle(State((responder, log)): State<(Responder, Log)>, req: Request) 
 /// A running application (router + engine) wired to a mock upstream.
 pub struct TestApp {
     pub base: String,
+    pub engine: Arc<TelegramEngine>,
     pub http: reqwest::Client,
     pub dir: PathBuf,
 }
 
 impl TestApp {
     pub async fn start(name: &str, local: bool, upstream: &MockUpstream) -> Self {
+        Self::start_at(name, local, &upstream.url).await
+    }
+
+    /// Like [`start`](Self::start) for an upstream that is not a `MockUpstream`.
+    pub async fn start_at(name: &str, local: bool, upstream_url: &str) -> Self {
         let dir = std::env::temp_dir().join(format!("tgapp_{name}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let storage = crate::storage::StorageEngine::new(&dir).unwrap();
         let mut engine = TelegramEngine::new(local, dir.clone(), dir.clone(), storage);
-        engine.upstream_base_url = upstream.url.clone();
+        engine.upstream_base_url = upstream_url.to_string();
         let engine = Arc::new(engine);
         let config = ServerConfig::parse_from(if local { vec!["bot", "--local"] } else { vec!["bot"] });
         let state = AppState {
             config: Arc::new(config),
             engine: Arc::clone(&engine),
-            client_manager: Arc::new(ClientManager::new(engine)),
+            client_manager: Arc::new(ClientManager::new(Arc::clone(&engine))),
             stats: Arc::new(crate::stats::ServerStats::new()),
             watchdog: crate::watchdog::Watchdog::new(60),
         };
@@ -128,6 +134,7 @@ impl TestApp {
         });
         Self {
             base,
+            engine,
             http: reqwest::Client::new(),
             dir: std::fs::canonicalize(&dir).unwrap(),
         }

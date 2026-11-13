@@ -80,8 +80,8 @@ impl TelegramEngine {
         };
 
         let plan = match method {
-            Method::SendMediaGroup => self.plan_media_group(&map),
-            Method::EditMessageMedia => self.plan_edit_media(&map),
+            Method::SendMediaGroup => self.plan_media_group(&map).await,
+            Method::EditMessageMedia => self.plan_edit_media(&map).await,
             _ => None,
         };
         if let Some(plan) = plan {
@@ -92,7 +92,7 @@ impl TelegramEngine {
         let mut local: Option<(&str, PathBuf)> = None;
         for &field in MEDIA_FIELDS {
             let Some(Value::String(s)) = map.get(field) else { continue };
-            if let Some(path) = self.resolve_local_path(s) {
+            if let Some(path) = self.resolve_local_path(s).await {
                 local = Some((field, path));
                 break;
             }
@@ -140,7 +140,7 @@ impl TelegramEngine {
         let caption = query.get("caption").map(String::as_str).unwrap_or("");
         for &field in MEDIA_FIELDS {
             let Some(val) = query.get(field) else { continue };
-            if let Some(path) = self.resolve_local_path(val) {
+            if let Some(path) = self.resolve_local_path(val).await {
                 if file_len(&path).await > MTPROTO_UPLOAD_THRESHOLD {
                     return Some(
                         self.upload_local_file_mtproto(LargeUpload {
@@ -167,18 +167,13 @@ impl TelegramEngine {
     }
 
     /// sendMediaGroup: every `media[].media` that names a local file becomes an `attach://file_<i>` part.
-    fn plan_media_group(&self, map: &Map<String, Value>) -> Option<Multipart> {
+    async fn plan_media_group(&self, map: &Map<String, Value>) -> Option<Multipart> {
         let Some(Value::Array(items)) = map.get("media") else { return None };
         let mut items = items.clone();
         let mut files = Vec::new();
         for (idx, item) in items.iter_mut().enumerate() {
-            let Some(path) = item
-                .get("media")
-                .and_then(Value::as_str)
-                .and_then(|m| self.resolve_local_path(m))
-            else {
-                continue;
-            };
+            let Some(media) = item.get("media").and_then(Value::as_str) else { continue };
+            let Some(path) = self.resolve_local_path(media).await else { continue };
             let attach = format!("file_{idx}");
             item["media"] = Value::String(format!("attach://{attach}"));
             files.push((attach, path));
@@ -192,9 +187,9 @@ impl TelegramEngine {
     }
 
     /// editMessageMedia: a local `media.media` becomes the `attach://file_edit` part.
-    fn plan_edit_media(&self, map: &Map<String, Value>) -> Option<Multipart> {
+    async fn plan_edit_media(&self, map: &Map<String, Value>) -> Option<Multipart> {
         let Some(Value::Object(item)) = map.get("media") else { return None };
-        let path = self.resolve_local_path(item.get("media")?.as_str()?)?;
+        let path = self.resolve_local_path(item.get("media")?.as_str()?).await?;
         let mut item = item.clone();
         item.insert("media".to_string(), Value::String("attach://file_edit".to_string()));
         Some(Multipart {
