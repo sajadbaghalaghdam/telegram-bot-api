@@ -844,8 +844,17 @@ pub struct MediaAttrs {
 /// Maximum upload size: 4000 parts of 512 KiB (2000 MiB), as in TDLib.
 const MAX_UPLOAD_PARTS: usize = 4000;
 
-/// Writes the `attributes` vector (filename plus kind-specific attribute) and returns the
-/// document flags to use.
+/// `inputMediaUploadedDocument` flags for a media kind. `force_file` (bit 4) makes Telegram
+/// treat the upload as a plain file, so it is set only for `MediaKind::Document`; typed media
+/// (video/audio/voice/animation) must not carry it or they would be shown as documents.
+/// `supports_streaming` is an attribute-level flag written by `write_document_attributes`.
+/// `nosound_video` (bit 3) is deliberately not set: the audio presence of the file is unknown.
+fn document_media_flags(kind: MediaKind) -> i32 {
+    if kind == MediaKind::Document { 1 << 4 } else { 0 }
+}
+
+/// Writes the `attributes` vector (filename plus kind-specific attribute). The media flags
+/// are computed separately by [`document_media_flags`] because they precede the file in the TL.
 fn write_document_attributes(buf: &mut BytesMut, file_name: &str, attrs: &MediaAttrs) {
     let mut count = 1;
     let extra = attrs.kind != MediaKind::Document;
@@ -1089,7 +1098,7 @@ pub async fn upload_and_send_large_file_typed(
 
     // inputMediaUploadedDocument#37c9330
     write_int(&mut send_req, 0x037c9330u32 as i32);
-    write_int(&mut send_req, 1 << 4); // flags: force_file (bit 4)
+    write_int(&mut send_req, document_media_flags(media_attrs.kind)); // force_file only for plain documents
     if is_big {
         // inputFileBig#fa4f0bb5 id:long parts:int name:string
         write_int(&mut send_req, 0xfa4f0bb5u32 as i32);
@@ -1445,6 +1454,14 @@ mod tests {
 #[cfg(test)]
 mod attr_tests {
     use super::*;
+
+    #[test]
+    fn media_flags_force_file_only_for_documents() {
+        assert_eq!(document_media_flags(MediaKind::Document), 1 << 4);
+        for k in [MediaKind::Video, MediaKind::VideoNote, MediaKind::Animation, MediaKind::Audio, MediaKind::Voice] {
+            assert_eq!(document_media_flags(k), 0);
+        }
+    }
 
     #[test]
     fn document_attributes_by_kind() {
