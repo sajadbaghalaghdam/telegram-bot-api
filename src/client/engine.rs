@@ -152,6 +152,42 @@ impl TelegramEngine {
         }
     }
 
+    /// Drops a bot from the seen-bots map (called when upstream answers 401 for its token).
+    pub fn forget_active_bot(&self, token: &str) {
+        let bot_id = token.split(':').next().unwrap_or(token);
+        self.active_bots.remove(bot_id);
+    }
+
+    /// Updates the seen-bots map from an upstream reply: record on ok:true, forget on error_code 401.
+    /// Only tokens upstream accepted are counted, so fake tokens cannot inflate `bot_count`.
+    fn note_upstream_reply(&self, token: &str, reply: &Result<Bytes, TelegramError>) {
+        match reply {
+            Ok(bytes) => {
+                #[derive(serde::Deserialize)]
+                struct Head {
+                    ok: Option<bool>,
+                    error_code: Option<i64>,
+                }
+                // Skip the parse for already-known bots unless the reply is small enough to be a 401.
+                let bot_id = token.split(':').next().unwrap_or(token);
+                if self.active_bots.contains_key(bot_id) && bytes.len() > 4096 {
+                    return;
+                }
+                if let Ok(h) = serde_json::from_slice::<Head>(bytes) {
+                    if h.ok == Some(true) {
+                        self.record_active_bot(token);
+                    } else if h.error_code == Some(401) {
+                        self.forget_active_bot(token);
+                    }
+                }
+            }
+            Err(TelegramError::Unauthorized(_)) | Err(TelegramError::ApiError { code: 401, .. }) => {
+                self.forget_active_bot(token)
+            }
+            Err(_) => {}
+        }
+    }
+
     #[inline]
     pub fn active_bots_count(&self) -> usize {
         self.active_bots
@@ -292,7 +328,7 @@ impl TelegramEngine {
         }
 
         // 1. Fetch bot identity and target chat metadata (including username hint for peer resolution)
-        let bot_user = self.get_me(token).await.ok();
+        let bot_user = self.get_me_or_stale(token).await;
         let chat_url = format!(
             "{}/bot{token}/getChat?chat_id={}",
             self.upstream_base_url, chat_id_str
@@ -513,11 +549,28 @@ impl TelegramEngine {
 
     /// Execute getMe (checks SQLite WAL + L1 DashMap cache first)
     pub async fn get_me(&self, token: &str) -> TelegramResult<User> {
-        self.record_active_bot(token);
         if let Some(cached_user) = self.storage.get_bot(token).await {
+            self.record_active_bot(token);
             return Ok((*cached_user).clone());
         }
         self.get_me_fresh(token).await
+    }
+
+    /// getMe for the MTProto upload path: if the refresh fails for a transient reason (network / 5xx),
+    /// fall back to the expired cached profile instead of losing the bot identity. Auth errors
+    /// (401 etc.) are not masked.
+    async fn get_me_or_stale(&self, token: &str) -> Option<User> {
+        match self.get_me(token).await {
+            Ok(u) => Some(u),
+            Err(e) if is_transient_upstream_error(&e) => {
+                let stale = self.storage.get_bot_stale(token).await;
+                if stale.is_some() {
+                    tracing::warn!("getMe refresh failed ({e}); using stale cached bot profile");
+                }
+                stale.map(|u| (*u).clone())
+            }
+            Err(_) => None,
+        }
     }
 
     /// getMe straight from upstream (validates the token), refreshing the storage cache
@@ -537,6 +590,9 @@ impl TelegramEngine {
         let user = match (resp.ok, resp.result) {
             (true, Some(user)) => user,
             _ => {
+                if resp.error_code.unwrap_or(401) == 401 {
+                    self.forget_active_bot(token);
+                }
                 return Err(TelegramError::ApiError {
                     code: resp.error_code.unwrap_or(401),
                     description: resp
@@ -1258,7 +1314,22 @@ impl TelegramEngine {
         body_bytes: Bytes,
     ) -> TelegramResult<Bytes> {
         self.check_token_filter(token)?;
-        self.record_active_bot(token);
+        let reply = self
+            .universal_call_inner(token, method, query_map, query_str, content_type, body_bytes)
+            .await;
+        self.note_upstream_reply(token, &reply);
+        reply
+    }
+
+    async fn universal_call_inner(
+        self: &Arc<Self>,
+        token: &str,
+        method: &str,
+        query_map: &std::collections::HashMap<String, String>,
+        query_str: Option<&str>,
+        content_type: Option<&str>,
+        body_bytes: Bytes,
+    ) -> TelegramResult<Bytes> {
         let method_lower = method.to_ascii_lowercase();
 
         if method_lower == "getupdates" && self.webhook_workers.contains_key(token) {
@@ -1755,7 +1826,26 @@ pub fn media_attrs_for(
     } else {
         (num("width"), num("height"))
     };
-    MediaAttrs { kind, duration: num("duration"), width, height }
+    // C++ to_bool: "true" / "yes" / "1" (case-insensitive, trimmed); JSON booleans are accepted too.
+    let supports_streaming = fields
+        .and_then(|m| m.get("supports_streaming"))
+        .map(|v| match v {
+            Value::Bool(b) => *b,
+            Value::String(s) => matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1"),
+            Value::Number(n) => n.as_i64() == Some(1),
+            _ => false,
+        })
+        .unwrap_or(false);
+    MediaAttrs { kind, duration: num("duration"), width, height, supports_streaming }
+}
+
+/// True for failures that say nothing about the token itself: network/parse errors and upstream 5xx.
+fn is_transient_upstream_error(e: &TelegramError) -> bool {
+    match e {
+        TelegramError::Internal(_) => true,
+        TelegramError::ApiError { code, .. } => *code >= 500,
+        _ => false,
+    }
 }
 
 /// Pure token validation matching C++ ClientManager::send: structural problems and out-of-range ids -> 401,
@@ -1769,7 +1859,8 @@ pub fn validate_token(token: &str, filter: Option<(u64, u64)>) -> Result<(), Tel
         return Err(invalid());
     };
     let forbidden = || TelegramError::MisdirectedRequest("forbidden token specified".to_string());
-    let parsed = if id_str.starts_with('+') { None } else { id_str.parse::<i64>().ok() };
+    // C++ to_integer_safe: the parsed value must print back as the same string ("+1", "-0", "-05" are rejected).
+    let parsed = id_str.parse::<i64>().ok().filter(|id| id.to_string() == id_str);
     let Some(id) = parsed else {
         return Err(forbidden());
     };
@@ -1789,6 +1880,22 @@ mod token_tests {
     use super::*;
 
     #[test]
+    fn transient_errors_allow_stale_profile() {
+        assert!(is_transient_upstream_error(&TelegramError::Internal("Network error: x".into())));
+        assert!(is_transient_upstream_error(&TelegramError::ApiError {
+            code: 502,
+            description: "Bad Gateway".into(),
+            parameters: None
+        }));
+        assert!(!is_transient_upstream_error(&TelegramError::ApiError {
+            code: 401,
+            description: "Unauthorized".into(),
+            parameters: None
+        }));
+        assert!(!is_transient_upstream_error(&TelegramError::Unauthorized("x".into())));
+    }
+
+    #[test]
     fn token_validation() {
         assert!(validate_token("123:abc", None).is_ok());
         assert!(matches!(validate_token("+123:abc", None), Err(TelegramError::MisdirectedRequest(_))));
@@ -1796,6 +1903,11 @@ mod token_tests {
         assert!(matches!(validate_token("0123:abc", None), Err(TelegramError::Unauthorized(_))));
         assert!(matches!(validate_token("a/b:c", None), Err(TelegramError::Unauthorized(_))));
         assert!(matches!(validate_token("12x:abc", None), Err(TelegramError::MisdirectedRequest(_))));
+        for bad in ["-0:abc", "-05:abc", "-00:abc", "+0:a", ":abc", "99999999999999999999:abc"] {
+            assert!(matches!(validate_token(bad, None), Err(TelegramError::MisdirectedRequest(_))), "{bad}");
+        }
+        // Canonical negative ids parse fine and are then rejected as out of range (401).
+        assert!(matches!(validate_token("-5:abc", None), Err(TelegramError::Unauthorized(_))));
         assert!(matches!(validate_token("123:abc", Some((0, 2))), Err(TelegramError::MisdirectedRequest(_))));
         assert!(validate_token("124:abc", Some((0, 2))).is_ok());
         assert!(matches!(validate_token("18014398509481984:a", None), Err(TelegramError::Unauthorized(_))));
@@ -1877,8 +1989,80 @@ mod media_attr_tests {
             serde_json::from_str(r#"{"duration":"7","width":640,"height":480}"#).unwrap();
         let a = media_attrs_for("sendVideo", Some(&m));
         assert_eq!((a.kind, a.duration, a.width, a.height), (MediaKind::Video, 7, 640, 480));
+        assert!(!a.supports_streaming);
+        for (raw, want) in [("true", true), ("\"Yes\"", true), ("\"1\"", true), ("\"false\"", false), ("false", false), ("\"0\"", false)] {
+            let m: serde_json::Map<String, Value> =
+                serde_json::from_str(&format!("{{\"supports_streaming\":{raw}}}")).unwrap();
+            assert_eq!(media_attrs_for("sendVideo", Some(&m)).supports_streaming, want, "{raw}");
+        }
         assert_eq!(media_attrs_for("sendDocument", Some(&m)).kind, MediaKind::Document);
         assert_eq!(media_attrs_for("sendVoice", None).kind, MediaKind::Voice);
         assert_eq!(media_attrs_for("sendVideoNote", None).kind, MediaKind::VideoNote);
+    }
+}
+
+#[cfg(test)]
+mod active_bot_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Mock upstream: ok for token "1:good", otherwise a 401 JSON error.
+    async fn mock_upstream() -> u16 {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (mut s, _) = l.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let body = if head.contains("/bot1:good/") {
+                        r#"{"ok":true,"result":true}"#
+                    } else {
+                        r#"{"ok":false,"error_code":401,"description":"Unauthorized"}"#
+                    };
+                    let r = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = s.write_all(r.as_bytes()).await;
+                    let _ = s.shutdown().await;
+                });
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn only_upstream_accepted_tokens_are_counted() {
+        let port = mock_upstream().await;
+        let dir = std::env::temp_dir().join(format!("activebot_{}", std::process::id()));
+        let storage = crate::storage::StorageEngine::new(&dir).unwrap();
+        let mut e = TelegramEngine::new(false, dir.clone(), dir.clone(), storage);
+        e.upstream_base_url = format!("http://127.0.0.1:{port}");
+        let e = Arc::new(e);
+        let none = std::collections::HashMap::new();
+
+        for i in 2..12 {
+            let tok = format!("{i}:fake");
+            let r = e.universal_call(&tok, "getChat", &none, None, None, Bytes::new()).await.unwrap();
+            assert!(String::from_utf8_lossy(&r).contains("401"));
+        }
+        assert_eq!(e.active_bots.len(), 0, "fake tokens must not be recorded");
+
+        e.universal_call("1:good", "getChat", &none, None, None, Bytes::new()).await.unwrap();
+        assert_eq!(e.active_bots.len(), 1);
+
+        // A later 401 for a recorded token removes it again.
+        e.record_active_bot("7:revoked");
+        assert_eq!(e.active_bots.len(), 2);
+        e.universal_call("7:revoked", "getChat", &none, None, None, Bytes::new()).await.unwrap();
+        assert_eq!(e.active_bots.len(), 1);
+
+        // get_me with a bad token errors and is not counted.
+        assert!(e.get_me("9:bad").await.is_err());
+        assert_eq!(e.active_bots.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

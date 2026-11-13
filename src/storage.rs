@@ -214,6 +214,25 @@ impl StorageEngine {
         }
     }
 
+    /// Cached Bot User profile ignoring the TTL (stale-on-error fallback when a refresh fails).
+    /// Does not touch L1 freshness bookkeeping.
+    pub async fn get_bot_stale(&self, token: &str) -> Option<Arc<User>> {
+        if let Some(cached) = self.l1_bots.get(token) {
+            return Some(Arc::clone(&cached.value().0));
+        }
+        let reader = self.next_reader();
+        let token_owned = token.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = reader.lock().ok()?;
+            let mut stmt = conn.prepare_cached("SELECT user_json FROM bots WHERE token = ?1").ok()?;
+            let json_str: String = stmt.query_row(params![token_owned], |row| row.get(0)).ok()?;
+            serde_json::from_str::<User>(&json_str).ok().map(Arc::new)
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
     /// Persists Bot User profile into L1 DashMap and SQLite WAL asynchronously.
     pub async fn save_bot(&self, token: &str, user: &User) {
         let arc_user = Arc::new(user.clone());
@@ -501,6 +520,9 @@ mod tests {
         st.writer.lock().unwrap().execute("UPDATE bots SET updated_at = ?1", params![old - BOT_PROFILE_TTL_SECS]).unwrap();
         st.l1_bots.clear();
         assert!(st.get_bot("t").await.is_none());
+        // ...but the stale-on-error fallback still serves them.
+        assert_eq!(st.get_bot_stale("t").await.unwrap().id, 1);
+        assert!(st.get_bot_stale("missing").await.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

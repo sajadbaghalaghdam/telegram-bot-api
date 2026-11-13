@@ -846,6 +846,8 @@ pub struct MediaAttrs {
     pub duration: i32,
     pub width: i32,
     pub height: i32,
+    /// `supports_streaming` request flag (sendVideo only, default false as in C++).
+    pub supports_streaming: bool,
 }
 
 /// Maximum upload size: 4000 parts of 512 KiB (2000 MiB), as in TDLib.
@@ -880,7 +882,11 @@ fn write_document_attributes(buf: &mut BytesMut, file_name: &str, attrs: &MediaA
             if attrs.kind == MediaKind::Animation {
                 write_int(buf, 0x11b58939u32 as i32); // documentAttributeAnimated#11b58939
             }
-            let flags = if attrs.kind == MediaKind::VideoNote { 1 } else { 2 };
+            let flags = match attrs.kind {
+                MediaKind::VideoNote => 1,
+                MediaKind::Video if attrs.supports_streaming => 2,
+                _ => 0,
+            };
             write_int(buf, 0x43c57c48u32 as i32);
             write_int(buf, flags);
             buf.put_f64_le(attrs.duration as f64);
@@ -1500,5 +1506,22 @@ mod attr_tests {
         let attrs = MediaAttrs { kind: MediaKind::Animation, ..Default::default() };
         write_document_attributes(&mut b, "a.gif", &attrs);
         assert_eq!(&b[4..8], &3i32.to_le_bytes());
+        // Animated attr, then video attr whose flags (never supports_streaming for animations) are 0.
+        assert_eq!(&b[8..12], &0x11b58939u32.to_le_bytes());
+        assert_eq!(&b[12..16], &0x43c57c48u32.to_le_bytes());
+        assert_eq!(&b[16..20], &0i32.to_le_bytes());
+    }
+
+    #[test]
+    fn video_supports_streaming_flag_only_when_requested() {
+        let flags_of = |attrs: MediaAttrs| {
+            let mut b = BytesMut::new();
+            write_document_attributes(&mut b, "a.mp4", &attrs);
+            // vector header (8) + attr constructor (4) -> flags
+            i32::from_le_bytes(b[12..16].try_into().unwrap())
+        };
+        assert_eq!(flags_of(MediaAttrs { kind: MediaKind::Video, ..Default::default() }), 0);
+        assert_eq!(flags_of(MediaAttrs { kind: MediaKind::Video, supports_streaming: true, ..Default::default() }), 2);
+        assert_eq!(flags_of(MediaAttrs { kind: MediaKind::VideoNote, ..Default::default() }), 1);
     }
 }

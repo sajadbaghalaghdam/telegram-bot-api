@@ -191,19 +191,30 @@ fn parse_upload_file_chunk(resp: &[u8]) -> Result<Vec<u8>, Error> {
 }
 
 /// True when an RPC/transport error message indicates a stale/dropped authorization that a
-/// fresh auth key may fix. Matches the real texts ("MTProto transport error -404",
-/// "Transport error code: -404", "early eof", AUTH_KEY_*), case-insensitively.
+/// fresh auth key may fix: transport error -404 ("MTProto transport error -404",
+/// "MTProto transport error: -404", "Transport error code: -404"), "early eof" or AUTH_KEY_*,
+/// case-insensitively. Other transport codes (e.g. -429 flood, -444 invalid DC) must not
+/// trigger a refresh.
 fn is_auth_refresh_error(msg: &str) -> bool {
     let m = msg.to_ascii_lowercase();
-    m.contains("early eof") || m.contains("transport error") || m.contains("auth_key")
+    if m.contains("early eof") || m.contains("auth_key") {
+        return true;
+    }
+    m.contains("transport error")
+        && m.match_indices("-404").any(|(i, _)| !m[i + 4..].starts_with(|c: char| c.is_ascii_digit()))
 }
 
-/// Whether a failed getFile at `offset` should be treated as "past end of file".
-/// `OFFSET_INVALID` always counts; with a known file size, any error at or beyond the
-/// end is EOF rather than a failure.
-fn is_past_eof_error(msg: &str, offset: i64, expected_size: Option<u64>) -> bool {
+/// Whether a failed getFile should be treated as "past end of file". The file size is not known
+/// when downloading, so only `OFFSET_INVALID` counts; an empty or short chunk is the other EOF signal.
+fn is_past_eof_error(msg: &str) -> bool {
     msg.contains("OFFSET_INVALID")
-        || expected_size.map_or(false, |sz| offset >= 0 && offset as u64 >= sz)
+}
+
+/// Decides the index of the final part from what the writer has seen: a short chunk is
+/// authoritative; otherwise the lowest empty/EOF marker minus one (workers race past the end, so
+/// several markers may arrive in any order).
+fn final_part_index(short_part: Option<usize>, min_empty_marker: Option<usize>) -> Option<usize> {
+    short_part.or_else(|| min_empty_marker.and_then(|m| m.checked_sub(1)))
 }
 
 /// Downloads a large file (up to 2000 MB / 2 GB) directly from Telegram MTProto 2.0 servers
@@ -214,20 +225,6 @@ pub async fn download_large_file_via_mtproto(
     bot_token: &str,
     file_id_str: &str,
     destination_dir: &Path,
-) -> Result<(PathBuf, u64), Error> {
-    download_large_file_via_mtproto_sized(api_id, api_hash, bot_token, file_id_str, destination_dir, None).await
-}
-
-/// Same as [`download_large_file_via_mtproto`], but with the known file size (Bot API
-/// `file_size`) when available: workers then never probe past the end, any error beyond
-/// the end counts as EOF, and the final byte count is verified against it.
-pub async fn download_large_file_via_mtproto_sized(
-    api_id: i32,
-    api_hash: &str,
-    bot_token: &str,
-    file_id_str: &str,
-    destination_dir: &Path,
-    expected_size: Option<u64>,
 ) -> Result<(PathBuf, u64), Error> {
     let loc = decode_file_id(file_id_str).ok_or_else(|| {
         Error::new(
@@ -358,16 +355,16 @@ pub async fn download_large_file_via_mtproto_sized(
     let writer_handle = tokio::spawn(async move {
         let mut received_parts = std::collections::HashSet::new();
         received_parts.insert(0); // part 0 is already written
-        let mut confirmed_last_part = None;
+        let mut short_part: Option<usize> = None;
+        let mut min_empty_marker: Option<usize> = None;
         let mut max_written_bytes = chunk0.len() as u64;
         let mut final_total_bytes = None;
 
         while let Some((part_idx, data, is_last)) = rx.recv().await {
             if data.is_empty() {
-                // Empty EOF marker: part_idx is past EOF, so part_idx - 1 was the final part
-                if part_idx > 0 && confirmed_last_part.is_none() {
-                    confirmed_last_part = Some(part_idx - 1);
-                }
+                // Empty EOF marker: part_idx is past EOF, so part_idx - 1 was the final part.
+                // Several workers may report markers out of order; keep the lowest.
+                min_empty_marker = Some(min_empty_marker.map_or(part_idx, |m| m.min(part_idx)));
                 continue;
             }
 
@@ -382,12 +379,12 @@ pub async fn download_large_file_via_mtproto_sized(
             }
 
             if is_last {
-                confirmed_last_part = Some(part_idx);
+                short_part = Some(part_idx);
                 final_total_bytes = Some(end_offset);
             }
         }
 
-        if let Some(last_idx) = confirmed_last_part {
+        if let Some(last_idx) = final_part_index(short_part, min_empty_marker) {
             // Contiguity verification: assert that every part from 0 to last_idx was received without gaps
             for part in 0..=last_idx {
                 if !received_parts.contains(&part) {
@@ -427,12 +424,6 @@ pub async fn download_large_file_via_mtproto_sized(
                 }
                 let part_idx = next_part_clone.fetch_add(1, Ordering::Relaxed);
                 let offset = (part_idx * CHUNK_SIZE) as i64;
-                if expected_size.map_or(false, |sz| offset as u64 >= sz) {
-                    // Known size: part 0..N-1 cover the file; no probe past the end.
-                    eof_clone.store(true, Ordering::Relaxed);
-                    let _ = tx_clone.send((part_idx, Vec::new(), true)).await;
-                    break;
-                }
                 let q = build_get_file_query(&loc_clone, offset, CHUNK_SIZE as i32);
 
                 let mut chunk_res = None;
@@ -445,7 +436,7 @@ pub async fn download_large_file_via_mtproto_sized(
                         Err(e) => {
                             let msg = e.to_string();
                             tracing::warn!("[dl] part {} attempt {} error: {}", part_idx, attempt, msg);
-                            if is_past_eof_error(&msg, offset, expected_size) {
+                            if is_past_eof_error(&msg) {
                                 eof_clone.store(true, Ordering::Relaxed);
                                 let _ = tx_clone.send((part_idx, Vec::new(), true)).await;
                                 return Ok(());
@@ -542,16 +533,6 @@ pub async fn download_large_file_via_mtproto_sized(
         }
     };
 
-    if let Some(sz) = expected_size {
-        if total_downloaded != sz {
-            let _ = fs::remove_file(&part_path).await;
-            return Err(Error::new(
-                ErrorKind::UnexpectedEof,
-                format!("Downloaded {} bytes but expected {}", total_downloaded, sz),
-            ));
-        }
-    }
-
     // Atomically move verified complete file to target destination
     fs::rename(&part_path, &target_path).await?;
 
@@ -576,15 +557,27 @@ mod tests {
         assert!(is_auth_refresh_error("Transport error code: -404"));
         assert!(is_auth_refresh_error("early eof"));
         assert!(is_auth_refresh_error("AUTH_KEY_UNREGISTERED"));
+        assert!(is_auth_refresh_error("MTProto transport error: -404"));
         assert!(!is_auth_refresh_error("FLOOD_WAIT_5"));
+        assert!(!is_auth_refresh_error("MTProto transport error -429"));
+        assert!(!is_auth_refresh_error("MTProto transport error: -444"));
+        assert!(!is_auth_refresh_error("Transport error code: -4040"));
+        assert!(!is_auth_refresh_error("transport error"));
     }
 
     #[test]
     fn past_eof_detection() {
-        assert!(is_past_eof_error("RPC error OFFSET_INVALID", 0, None));
-        assert!(!is_past_eof_error("BAD_REQUEST", 1 << 20, None));
-        assert!(is_past_eof_error("BAD_REQUEST", 1 << 20, Some(1 << 20)));
-        assert!(!is_past_eof_error("BAD_REQUEST", 0, Some(1 << 20)));
+        assert!(is_past_eof_error("RPC error OFFSET_INVALID"));
+        assert!(!is_past_eof_error("BAD_REQUEST"));
+    }
+
+    #[test]
+    fn final_part_from_short_chunk_or_lowest_marker() {
+        // Exact multiple of the chunk size: only empty markers, arriving out of order.
+        assert_eq!(final_part_index(None, Some(5)), Some(4));
+        assert_eq!(final_part_index(Some(4), Some(7)), Some(4));
+        assert_eq!(final_part_index(None, None), None);
+        assert_eq!(final_part_index(None, Some(0)), None);
     }
 
     #[test]

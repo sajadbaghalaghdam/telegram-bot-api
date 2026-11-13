@@ -13,7 +13,7 @@ An ultra-fast, high-performance, and ultra-low-memory **Telegram Bot API Server*
 
 * **Ultra-Low Memory Footprint (15–30 MB RSS)**: Runs in only 15–30 MB of RAM under real-world multi-bot production workloads (compared to ~1 GB in legacy servers).
 * **Native MTProto 2.0 Pipeline (Up to 2000 MB)**: Direct streaming to and from Telegram Cloud Data Centers with 512 KB pipelined chunks, Diffie-Hellman key exchange, AES-256-IGE packet cipher, and automatic DC migration (`FILE_MIGRATE_X`).
-* **Zero 20MB Cloud Restrictions in Local Mode**: Both `sendDocument` and `getFile` stream files up to 2000 MB with constant $O(1)$ RAM usage, bypassing cloud limitations.
+* **Zero 20MB Cloud Restrictions in Local Mode**: `sendDocument` and `getFile` handle files up to 2000 MB over MTProto in 512 KB parts (uploads read the file in chunks and downloads are written to disk part by part, so whole files are not held in RAM), bypassing cloud limitations. Not benchmarked against a live Telegram here.
 * **Pure Rust & Zero C++ Toolchain Hassle**: Built with Tokio, Axum, and embedded SQLite WAL caching. No CMake, no gperf, no external OpenSSL or heavy C++ build environments needed.
 * **Production-Grade SQLite WAL Storage**: High-speed local cache for file metadata, webhook registrations, and bot statistics.
 * **Drop-in Compatible**: Compatible with all standard Telegram Bot API clients and libraries (Python, Node.js, Go, PHP, C#, etc.).
@@ -25,7 +25,7 @@ An ultra-fast, high-performance, and ultra-low-memory **Telegram Bot API Server*
 | Metric | Legacy Server | Pure Rust Server (`telegram-bot-api-rs`) | Advantage |
 | :--- | :---: | :---: | :---: |
 | **Production RAM (RSS)** | `~988 MB` | **`15 MB – 30 MB`** | **~33x – 64x lower memory** |
-| **2GB File Upload Peak RAM** | High / Unbounded | **`~52 MB`** ($O(1)$ constant) | **Predictable memory footprint** |
+| **2GB File Upload Peak RAM** | High / Unbounded | Bounded by part size x worker count (512 KB parts; peak RSS not measured here) | Whole file is not held in RAM |
 | **Idle Private Memory** | `~10.8 MB` | **`~4.5 MB`** | **2.3x lower idle footprint** |
 | **Memory Growth per Active Bot** | `+8.5 MB` per bot | **`< 1 KB`** per bot (shared async pool) | **Infinite multi-bot scalability** |
 | **Clean Build Time** | `~18 minutes` (>3.5 GB RAM) | **`< 40 seconds`** (<500 MB RAM) | **~30x faster builds** |
