@@ -1059,35 +1059,74 @@ impl TelegramEngine {
         })
     }
 
-    /// Execute setWebhook. Locally delivered webhooks (local mode + private/loopback http URL) are
-    /// stored and delivered by a local worker; every other webhook is proxied to the upstream
-    /// Bot API untouched (not stored, no local worker, never touched by this process afterwards).
+    /// Asks the upstream Bot API to delete the cloud webhook (so getUpdates works); upstream
+    /// errors are returned as-is.
+    pub async fn delete_upstream_webhook(&self, token: &str, drop_pending_updates: bool) -> TelegramResult<()> {
+        let url = format!("{}/bot{token}/deleteWebhook", self.upstream_base_url);
+        let drop_param = if drop_pending_updates { "?drop_pending_updates=true" } else { "" };
+        let resp: ApiResponse<bool> = self
+            .client
+            .post(format!("{url}{drop_param}"))
+            .send()
+            .await
+            .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
+            .json()
+            .await
+            .map_err(|e| TelegramError::Internal(format!("Failed to parse response: {e}")))?;
+        if !resp.ok {
+            return Err(TelegramError::ApiError {
+                code: resp.error_code.unwrap_or(400),
+                description: resp
+                    .description
+                    .unwrap_or_else(|| "Failed to delete the upstream webhook".to_string()),
+                parameters: resp.parameters,
+            });
+        }
+        Ok(())
+    }
+
+    /// Execute setWebhook from typed parameters. Locally delivered webhooks (local mode +
+    /// private/loopback http URL) are stored and delivered by a local worker; every other webhook
+    /// is proxied to the upstream Bot API (not stored, no local worker).
     pub async fn set_webhook(
         self: &Arc<Self>,
         token: &str,
         req: &SetWebhookRequest,
     ) -> TelegramResult<bool> {
-        if !req.url.is_empty() {
+        self.set_webhook_raw(token, req, None).await
+    }
+
+    /// Like [`set_webhook`], but when `raw` is given and the webhook goes to the cloud server the
+    /// original request (body, content type, query) is forwarded unchanged, so multipart
+    /// `certificate` uploads and every other parameter reach upstream as the client sent them.
+    pub async fn set_webhook_raw(
+        self: &Arc<Self>,
+        token: &str,
+        req: &SetWebhookRequest,
+        raw: Option<super::webhook::RawForward<'_>>,
+    ) -> TelegramResult<bool> {
+        let mut url = req.url.clone();
+        if !url.is_empty() {
             self.check_set_webhook_throttle(token)?;
-            super::webhook::validate_webhook_url(&req.url)
+            url = super::webhook::normalize_webhook_url(&url)
                 .map_err(|m| TelegramError::BadRequest(m.to_string()))?;
-        }
-        if let Some(ref s) = req.secret_token {
-            super::webhook::validate_secret_token(s)
-                .map_err(|m| TelegramError::BadRequest(m.to_string()))?;
+            // Like C++, secret token and IP address only matter when a URL is being set.
+            if let Some(ref s) = req.secret_token {
+                super::webhook::validate_secret_token(s)
+                    .map_err(|m| TelegramError::BadRequest(m.to_string()))?;
+            }
+            if let Some(ip) = req.ip_address.as_deref().filter(|s| !s.is_empty()) {
+                super::webhook::validate_ip_address(ip)
+                    .map_err(|m| TelegramError::BadRequest(m.to_string()))?;
+            }
         }
 
-        let is_local_url = self.local_mode && is_local_webhook_url(&req.url);
+        let is_local_url = self.local_mode && is_local_webhook_url(&url);
 
         if is_local_url {
             // Ensure cloud webhook is deleted so local getUpdates worker can receive updates
-            let del_url = format!("{}/bot{token}/deleteWebhook", self.upstream_base_url);
-            let drop_param = if req.drop_pending_updates.unwrap_or(false) {
-                "?drop_pending_updates=true"
-            } else {
-                ""
-            };
-            let _ = self.client.post(format!("{}{}", del_url, drop_param)).send().await;
+            let drop_pending = req.drop_pending_updates.unwrap_or(false);
+            self.delete_upstream_webhook(token, drop_pending).await?;
 
             let max_conn = super::webhook::clamp_max_connections(
                 req.max_connections,
@@ -1099,7 +1138,7 @@ impl TelegramEngine {
             self.storage
                 .save_webhook(
                     token,
-                    &req.url,
+                    &url,
                     secret.as_deref(),
                     max_conn,
                     req.allowed_updates.as_deref(),
@@ -1109,27 +1148,38 @@ impl TelegramEngine {
 
             self.start_webhook_worker(super::webhook::WorkerConfig {
                 token: token.to_string(),
-                url: req.url.clone(),
+                url,
                 secret_token: secret,
                 allowed_updates: req.allowed_updates.clone(),
-                drop_pending_updates: req.drop_pending_updates.unwrap_or(false),
+                drop_pending_updates: drop_pending,
                 max_connections: max_conn,
                 ip_address: ip,
             });
             return Ok(true);
         }
 
-        // Cloud webhook: replaces any local one.
-        if self.webhook_workers.contains_key(token) || self.webhook_states.contains_key(token) {
-            self.stop_webhook_worker(token);
-        }
-        self.storage.delete_webhook(token).await;
-
-        let url = format!("{}/bot{token}/setWebhook", self.upstream_base_url);
-        let resp: ApiResponse<bool> = self
-            .client
-            .post(&url)
-            .json(req)
+        // Cloud webhook (or deletion via an empty URL): ask upstream first, and only replace the
+        // local webhook once upstream accepted the request.
+        let target = format!("{}/bot{token}/setWebhook", self.upstream_base_url);
+        let builder = match raw {
+            Some(r) => {
+                let target = match r.query {
+                    Some(q) if !q.is_empty() => format!("{target}?{q}"),
+                    _ => target,
+                };
+                let mut b = self.client.post(target);
+                if let Some(ct) = r.content_type {
+                    b = b.header(reqwest::header::CONTENT_TYPE, ct);
+                }
+                b.body(r.body.clone())
+            }
+            None => {
+                let mut fwd = req.clone();
+                fwd.url = url;
+                self.client.post(target).json(&fwd)
+            }
+        };
+        let resp: ApiResponse<bool> = builder
             .send()
             .await
             .map_err(|e| TelegramError::Internal(format!("Network error: {e}")))?
@@ -1146,6 +1196,8 @@ impl TelegramEngine {
                 parameters: resp.parameters,
             });
         }
+        self.stop_webhook_worker(token);
+        self.storage.delete_webhook(token).await;
         Ok(resp.result.unwrap_or(false))
     }
 
@@ -1340,55 +1392,17 @@ impl TelegramEngine {
 
         // 1. Handle setWebhook / deleteWebhook / getWebhookInfo / getFile specially
         if method_lower == "setwebhook" {
-            let mut url_val = query_map.get("url").cloned().unwrap_or_default();
-            let mut ip_address = query_map.get("ip_address").cloned();
-            let mut max_conn = query_map
-                .get("max_connections")
-                .and_then(|v| v.parse::<i32>().ok());
-            let mut secret_token = query_map.get("secret_token").cloned();
-            let mut drop_pending_updates = query_map
-                .get("drop_pending_updates")
-                .and_then(|v| v.parse::<bool>().ok());
-            let mut allowed_updates: Option<Vec<String>> = query_map
-                .get("allowed_updates")
-                .and_then(|s| serde_json::from_str(s).ok());
-
-            if !body_bytes.is_empty() {
-                if let Ok(json) = serde_json::from_slice::<Value>(&body_bytes) {
-                    if let Some(u) = json.get("url").and_then(|v| v.as_str()) {
-                        url_val = u.to_string();
-                    }
-                    if let Some(ip) = json.get("ip_address").and_then(|v| v.as_str()) {
-                        ip_address = Some(ip.to_string());
-                    }
-                    if let Some(mc) = json.get("max_connections").and_then(|v| v.as_i64()) {
-                        max_conn = Some(mc as i32);
-                    }
-                    if let Some(sec) = json.get("secret_token").and_then(|v| v.as_str()) {
-                        secret_token = Some(sec.to_string());
-                    }
-                    if let Some(drop) = json.get("drop_pending_updates").and_then(|v| v.as_bool()) {
-                        drop_pending_updates = Some(drop);
-                    }
-                    if let Some(arr) = json.get("allowed_updates").and_then(|v| v.as_array()) {
-                        let parsed: Vec<String> = arr
-                            .iter()
-                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                            .collect();
-                        allowed_updates = Some(parsed);
-                    }
-                }
-            }
-
-            let req = SetWebhookRequest {
-                url: url_val,
-                ip_address,
-                max_connections: max_conn,
-                allowed_updates,
-                drop_pending_updates,
-                secret_token,
+            // Query + JSON + form-urlencoded + multipart are merged into one argument map.
+            let args = super::webhook::parse_request_args(query_map, content_type, &body_bytes)
+                .map_err(TelegramError::BadRequest)?;
+            let req = super::webhook::set_webhook_request_from_args(&args)
+                .map_err(TelegramError::BadRequest)?;
+            let raw = super::webhook::RawForward {
+                query: query_str,
+                content_type,
+                body: &body_bytes,
             };
-            let ok = self.set_webhook(token, &req).await?;
+            let ok = self.set_webhook_raw(token, &req, Some(raw)).await?;
             if !ok {
                 return Err(TelegramError::BadRequest("Failed to set webhook".to_string()));
             }
