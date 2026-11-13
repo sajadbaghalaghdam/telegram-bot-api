@@ -71,6 +71,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/{token}/getMe", get(handlers::get_me).post(handlers::get_me))
         .route("/{token}/close", post(handlers::close).get(handlers::close))
         .route("/{token}/logOut", post(handlers::log_out).get(handlers::log_out))
+        .route("/{token}/getUploadProgress", get(handlers::get_upload_progress).post(handlers::get_upload_progress))
+        .route("/bot/{token}/getUploadProgress", get(handlers::get_upload_progress).post(handlers::get_upload_progress))
         .route("/bot/{token}/getMe", get(handlers::get_me).post(handlers::get_me))
         .route("/bot/{token}/close", post(handlers::close).get(handlers::close))
         .route("/bot/{token}/logOut", post(handlers::log_out).get(handlers::log_out))

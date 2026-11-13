@@ -30,6 +30,7 @@ pub mod tl;
 pub mod transport;
 pub mod updates;
 pub mod upload_parts;
+pub mod upload_progress;
 pub mod uploader;
 
 pub use downloader::download_large_file_via_mtproto;

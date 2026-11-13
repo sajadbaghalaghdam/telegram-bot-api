@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use super::auth::CachedBotAuth;
 use super::connection::MtProtoConnection;
+use super::upload_progress;
 use super::tl::{bytes_padding, write_bytes_header, write_int, write_long};
 
 /// 512 KB (maximum MTProto file part size, evenly divides 1 MB)
@@ -69,6 +70,8 @@ struct Shared {
     auth: CachedBotAuth,
     api_id: i32,
     next_part: AtomicUsize,
+    /// Bytes stored so far, for `getUploadProgress`.
+    progress: Arc<upload_progress::Entry>,
 }
 
 /// Writes the TL query for part `part_idx` into `q` (cleared first) and returns it. The file
@@ -122,12 +125,14 @@ async fn run_worker(shared: Arc<Shared>, mut conn: MtProtoConnection) -> Result<
     loop {
         // Fill the pipeline: each slot buffer is reused for every batch of this worker.
         ready.clear();
+        let mut batch_bytes = 0u64;
         for slot in slots.iter_mut() {
             let part_idx = shared.next_part.fetch_add(1, Ordering::Relaxed);
             if part_idx >= shared.total_parts {
                 break;
             }
             let q = build_part_query(&shared, std::mem::take(slot), part_idx).await?;
+            batch_bytes += PART_SIZE.min(shared.file_size - part_idx * PART_SIZE) as u64;
             ready.push(q);
         }
         if ready.is_empty() {
@@ -137,7 +142,10 @@ async fn run_worker(shared: Arc<Shared>, mut conn: MtProtoConnection) -> Result<
         let mut retry_count = 0u64;
         loop {
             match conn.rpc_call_batch_with(&ready, |_, body| expect_bool_true(body)).await {
-                Ok(()) => break,
+                Ok(()) => {
+                    shared.progress.add(batch_bytes);
+                    break;
+                }
                 Err(e) => {
                     retry_count += 1;
                     if retry_count > MAX_BATCH_RETRIES {
@@ -168,6 +176,8 @@ async fn run_worker(shared: Arc<Shared>, mut conn: MtProtoConnection) -> Result<
 pub async fn upload_parts(plan: &PartUpload<'_>, first_conn: MtProtoConnection) -> Result<MtProtoConnection, Error> {
     let total_parts = plan.total_parts();
     let file = tokio::fs::File::open(plan.path).await?.into_std().await;
+    // Listed for `getUploadProgress` until this returns (done, failed or dropped).
+    let tracking = upload_progress::start(plan.path, plan.file_size as u64);
     let shared = Arc::new(Shared {
         file,
         file_size: plan.file_size,
@@ -177,6 +187,7 @@ pub async fn upload_parts(plan: &PartUpload<'_>, first_conn: MtProtoConnection) 
         auth: plan.auth,
         api_id: plan.api_id,
         next_part: AtomicUsize::new(0),
+        progress: tracking.entry(),
     });
     let num_workers = UPLOAD_WORKERS.min(total_parts.max(1));
 
@@ -248,6 +259,7 @@ mod tests {
             auth: CachedBotAuth { dc_id: 1, auth_key: [0; 256], server_salt: 0, time_offset: 0 },
             api_id: 1,
             next_part: AtomicUsize::new(0),
+            progress: upload_progress::start(&path, size as u64).entry(),
         });
         for (idx, expect) in [(0usize, &data[..PART_SIZE]), (1, &data[PART_SIZE..])] {
             let q = build_part_query(&shared, vec![1, 2, 3], idx).await.unwrap(); // stale content is cleared

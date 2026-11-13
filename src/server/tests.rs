@@ -598,3 +598,36 @@ async fn aborted_large_multipart_upload_leaves_no_temp_file() {
     let app = TestApp::start("largeabort", false, &up).await;
     aborted_large_upload_leaves_nothing(&app).await;
 }
+
+#[tokio::test]
+async fn upload_progress_is_served_while_an_upload_is_listed() {
+    let up = echo_upstream().await;
+    let app = TestApp::start("upProgress", false, &up).await;
+    let path = "/tmp/upload-progress-http/x.mp4";
+    let url = format!("{}/bot{TOKEN}/getUploadProgress?path=file://{path}", app.base);
+
+    let g = Got::from(app.http.get(&url).send().await.unwrap()).await;
+    assert_eq!(g.status, 404, "nothing is uploading");
+    assert!(g.text().contains("no upload of this file is running"));
+
+    let tracking = crate::mtproto::upload_progress::start(std::path::Path::new(path), 1000);
+    tracking.entry().add(250);
+    let g = Got::from(app.http.get(&url).send().await.unwrap()).await;
+    assert_eq!(g.status, 200);
+    assert_eq!(g.text(), r#"{"ok":true,"result":{"done_bytes":250,"total_bytes":1000}}"#);
+    // POST with a JSON body works too, with or without `file://`.
+    let g = Got::from(
+        app.http
+            .post(format!("{}/bot{TOKEN}/getUploadProgress", app.base))
+            .header("content-type", "application/json")
+            .body(format!(r#"{{"path":"{path}"}}"#))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(g.status, 200);
+    drop(tracking);
+    let g = Got::from(app.http.get(&url).send().await.unwrap()).await;
+    assert_eq!(g.status, 404, "gone once the upload ends");
+}

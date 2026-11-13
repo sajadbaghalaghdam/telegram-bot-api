@@ -60,3 +60,56 @@ pub async fn close(State(state): State<SharedState>, params: RawPathParams) -> T
 pub async fn log_out(State(state): State<SharedState>, params: RawPathParams) -> TelegramResult<Response> {
     lifecycle_call(&state, &params, "logOut").await
 }
+
+/// The local path a `getUploadProgress` call names: its `path` query parameter, else the `path`
+/// of a JSON body; a `file://` prefix is dropped.
+fn upload_path(query: &HashMap<String, String>, body: &[u8]) -> Option<String> {
+    let path = query.get("path").cloned().or_else(|| {
+        serde_json::from_slice::<serde_json::Value>(body)
+            .ok()?
+            .get("path")?
+            .as_str()
+            .map(str::to_owned)
+    })?;
+    Some(path.strip_prefix("file://").map(str::to_owned).unwrap_or(path))
+}
+
+/// `getUploadProgress` (an extension of the Bot API): how far the large-file upload of the local
+/// file `path` is, while a `send*` request for it is open. 404 when no upload of it is running
+/// (not started yet, or finished): a client polls and treats that as "no news".
+pub async fn get_upload_progress(
+    State(state): State<SharedState>,
+    params: RawPathParams,
+    axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>,
+    body: Bytes,
+) -> TelegramResult<Response> {
+    let (token, _) = token_and_method(&params);
+    let token = token.strip_prefix("bot").unwrap_or(token);
+    state.engine.check_token_filter(token)?;
+    // A live bot session only: the token is checked like any other call's.
+    state.client_manager.get_or_create(token).await?;
+    let progress = upload_path(&query, &body).and_then(|path| crate::mtproto::upload_progress::snapshot(&path));
+    Ok(match progress {
+        Some((done, total)) => json_response(
+            StatusCode::OK,
+            serde_json::json!({"ok": true, "result": {"done_bytes": done, "total_bytes": total}}).to_string(),
+        ),
+        None => json_response(
+            StatusCode::NOT_FOUND,
+            r#"{"ok":false,"error_code":404,"description":"Not Found: no upload of this file is running"}"#,
+        ),
+    })
+}
+
+#[cfg(test)]
+mod upload_progress_tests {
+    use super::*;
+
+    #[test]
+    fn the_path_comes_from_the_query_or_the_body() {
+        let query = HashMap::from([("path".to_owned(), "file:///a/b.mp4".to_owned())]);
+        assert_eq!(upload_path(&query, b"").as_deref(), Some("/a/b.mp4"));
+        assert_eq!(upload_path(&HashMap::new(), br#"{"path":"/a/c.mp4"}"#).as_deref(), Some("/a/c.mp4"));
+        assert_eq!(upload_path(&HashMap::new(), b"nope"), None);
+    }
+}
