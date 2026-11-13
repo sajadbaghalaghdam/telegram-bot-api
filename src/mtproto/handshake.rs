@@ -144,7 +144,9 @@ impl<'a> MtProtoHandshake<'a> {
                 }
             }
         }
-        let rsa_key = matched_key.unwrap_or(&TELEGRAM_RSA_KEYS[0]);
+        let rsa_key = matched_key.ok_or_else(|| {
+            Error::new(ErrorKind::InvalidData, "no server RSA fingerprint matches a known Telegram public key")
+        })?;
 
         // Factorize pq into p and q (p <= q) and strip leading zero bytes (matching as_big_endian_string in tdutils/crypto.cpp)
         let (p, q) = factorize(pq)
@@ -170,7 +172,8 @@ impl<'a> MtProtoHandshake<'a> {
         write_int256(&mut inner_data, &new_nonce);
         write_int(&mut inner_data, self.dc_id);
 
-        let encrypted_data = rsa_pad_encrypt(&inner_data, rsa_key);
+        let encrypted_data = rsa_pad_encrypt(&inner_data, rsa_key)
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
 
         // 4. Send req_DH_params#d712e4be
         let mut req_dh = BytesMut::with_capacity(360);
