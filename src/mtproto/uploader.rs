@@ -700,9 +700,11 @@ pub async fn resolve_input_peer(
         let resp = conn.rpc_call(&req).await.map_err(|e| {
             Error::new(ErrorKind::NotFound, format!("Failed to resolve user {}: {}", chat_id, e))
         })?;
-        let access_hash = extract_user_access_hash(&resp, chat_id).ok_or_else(|| {
-            Error::new(ErrorKind::NotFound, format!("access_hash for user {} not found", chat_id))
-        })?;
+        // Bots may address users/channels with access_hash 0 (TDLib does the same).
+        let access_hash = extract_user_access_hash(&resp, chat_id).unwrap_or_else(|| {
+            tracing::warn!("[upload] access_hash for user {} not found in response, using 0", chat_id);
+            0
+        });
 
         let mut peer = BytesMut::with_capacity(20);
         write_int(&mut peer, 0xdde8a54cu32 as i32); // inputPeerUser#dde8a54c
@@ -722,9 +724,10 @@ pub async fn resolve_input_peer(
         let resp = conn.rpc_call(&req).await.map_err(|e| {
             Error::new(ErrorKind::NotFound, format!("Failed to resolve channel {}: {}", channel_id, e))
         })?;
-        let access_hash = extract_channel_access_hash(&resp, channel_id).ok_or_else(|| {
-            Error::new(ErrorKind::NotFound, format!("access_hash for channel {} not found", channel_id))
-        })?;
+        let access_hash = extract_channel_access_hash(&resp, channel_id).unwrap_or_else(|| {
+            tracing::warn!("[upload] access_hash for channel {} not found in response, using 0", channel_id);
+            0
+        });
 
         let mut peer = BytesMut::with_capacity(20);
         write_int(&mut peer, 0x27bcbbfcu32 as i32); // inputPeerChannel#27bcbbfc
@@ -760,8 +763,10 @@ async fn resolve_username_mtproto(
 
     match peer_ctor {
         0x59511722 => {
-            let ah = extract_user_access_hash(&resp, peer_id)
-                .ok_or_else(|| Error::new(ErrorKind::NotFound, "access_hash for resolved user not found"))?;
+            let ah = extract_user_access_hash(&resp, peer_id).unwrap_or_else(|| {
+                tracing::warn!("[upload] access_hash for resolved user {} not found, using 0", peer_id);
+                0
+            });
             let mut peer = BytesMut::with_capacity(20);
             write_int(&mut peer, 0xdde8a54cu32 as i32);
             write_long(&mut peer, peer_id);
@@ -769,8 +774,10 @@ async fn resolve_username_mtproto(
             Ok(peer)
         }
         0xa2a5371e => {
-            let ah = extract_channel_access_hash(&resp, peer_id)
-                .ok_or_else(|| Error::new(ErrorKind::NotFound, "access_hash for resolved channel not found"))?;
+            let ah = extract_channel_access_hash(&resp, peer_id).unwrap_or_else(|| {
+                tracing::warn!("[upload] access_hash for resolved channel {} not found, using 0", peer_id);
+                0
+            });
             let mut peer = BytesMut::with_capacity(20);
             write_int(&mut peer, 0x27bcbbfcu32 as i32);
             write_long(&mut peer, peer_id);
@@ -1454,6 +1461,19 @@ mod tests {
 #[cfg(test)]
 mod attr_tests {
     use super::*;
+
+    #[test]
+    fn extract_user_hash_requires_flag_and_id() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0x31774388u32.to_le_bytes());
+        b.extend_from_slice(&1i32.to_le_bytes()); // flags: access_hash present
+        b.extend_from_slice(&0i32.to_le_bytes()); // flags2
+        b.extend_from_slice(&42i64.to_le_bytes());
+        b.extend_from_slice(&777i64.to_le_bytes());
+        b.extend_from_slice(&[0u8; 16]);
+        assert_eq!(extract_user_access_hash(&b, 42), Some(777));
+        assert_eq!(extract_user_access_hash(&b, 43), None);
+    }
 
     #[test]
     fn media_flags_force_file_only_for_documents() {
