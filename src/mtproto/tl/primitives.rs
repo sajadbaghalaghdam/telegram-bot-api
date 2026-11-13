@@ -1,4 +1,4 @@
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut};
 use std::str;
 use thiserror::Error;
 
@@ -16,43 +16,47 @@ pub enum TLError {
     TooLarge(usize),
 }
 
-pub fn write_int(buf: &mut BytesMut, val: i32) {
+pub fn write_int(buf: &mut impl BufMut, val: i32) {
     buf.put_i32_le(val);
 }
 
-pub fn write_long(buf: &mut BytesMut, val: i64) {
+pub fn write_long(buf: &mut impl BufMut, val: i64) {
     buf.put_i64_le(val);
 }
 
-pub fn write_int128(buf: &mut BytesMut, val: &[u8; 16]) {
+pub fn write_int128(buf: &mut impl BufMut, val: &[u8; 16]) {
     buf.put_slice(val);
 }
 
-pub fn write_int256(buf: &mut BytesMut, val: &[u8; 32]) {
+pub fn write_int256(buf: &mut impl BufMut, val: &[u8; 32]) {
     buf.put_slice(val);
 }
 
-pub fn write_bytes(buf: &mut BytesMut, data: &[u8]) {
-    let len = data.len();
-    let header_len = if len <= 253 {
+/// Writes the TL `bytes` length prefix for a payload of `len` bytes and returns its size
+/// (1 byte for `len <= 253`, otherwise `0xfe` + 3 length bytes).
+pub fn write_bytes_header(buf: &mut impl BufMut, len: usize) -> usize {
+    if len <= 253 {
         buf.put_u8(len as u8);
-        buf.put_slice(data);
         1
     } else {
         buf.put_u8(254);
-        let len_bytes = (len as u32).to_le_bytes();
-        buf.put_slice(&len_bytes[0..3]);
-        buf.put_slice(data);
+        buf.put_slice(&(len as u32).to_le_bytes()[0..3]);
         4
-    };
-
-    let padding = (4 - ((header_len + len) % 4)) % 4;
-    if padding > 0 {
-        buf.put_bytes(0, padding);
     }
 }
 
-pub fn write_string(buf: &mut BytesMut, s: &str) {
+/// Zero padding that follows a TL `bytes` payload so the whole field is 4-byte aligned.
+pub fn bytes_padding(header_len: usize, len: usize) -> usize {
+    (4 - ((header_len + len) % 4)) % 4
+}
+
+pub fn write_bytes(buf: &mut impl BufMut, data: &[u8]) {
+    let header_len = write_bytes_header(buf, data.len());
+    buf.put_slice(data);
+    buf.put_bytes(0, bytes_padding(header_len, data.len()));
+}
+
+pub fn write_string(buf: &mut impl BufMut, s: &str) {
     write_bytes(buf, s.as_bytes());
 }
 
@@ -143,6 +147,7 @@ pub fn read_string<'a>(cursor: &mut &'a [u8]) -> Result<&'a str, TLError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::BytesMut;
 
     #[test]
     fn test_int_roundtrip() {
@@ -193,6 +198,21 @@ mod tests {
 
         let mut cursor = buf.as_ref();
         assert_eq!(read_bytes(&mut cursor).unwrap(), val);
+    }
+
+    #[test]
+    fn test_header_and_padding_helpers_match_write_bytes() {
+        for len in [0usize, 1, 3, 4, 253, 254, 255, 300, 512 * 1024] {
+            let data = vec![0xabu8; len];
+            let mut whole = Vec::new();
+            write_bytes(&mut whole, &data);
+            let mut parts = Vec::new();
+            let h = write_bytes_header(&mut parts, len);
+            parts.extend_from_slice(&data);
+            parts.resize(parts.len() + bytes_padding(h, len), 0);
+            assert_eq!(whole, parts, "len {len}");
+            assert_eq!(whole.len() % 4, 0);
+        }
     }
 
     #[test]

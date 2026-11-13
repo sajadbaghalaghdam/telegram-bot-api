@@ -82,6 +82,19 @@ fn telegram_dh_prime() -> BigUint {
     BigUint::parse_bytes(TELEGRAM_DH_PRIME_HEX.as_bytes(), 16).expect("valid hex")
 }
 
+/// `new_nonce_hash1` of `dh_gen_ok`: the lower 128 bits of
+/// `SHA1(new_nonce || 0x01 || auth_key_aux_hash)`, where `auth_key_aux_hash` is the higher
+/// 64 bits of `SHA1(auth_key)` (core.telegram.org/mtproto/auth_key, step 9).
+fn dh_gen_ok_nonce_hash(new_nonce: &[u8; 32], auth_key: &[u8; 256]) -> [u8; 16] {
+    let aux = Sha1::digest(auth_key);
+    let mut h = Sha1::new();
+    h.update(new_nonce);
+    h.update([1u8]);
+    h.update(&aux[..8]);
+    let digest = h.finalize();
+    digest[4..20].try_into().expect("16 bytes")
+}
+
 /// Subgroup residue rule: g must generate the quadratic-residue subgroup of the safe prime p
 /// (same rules as TDLib / OpenSSL DH_check for g in 2..=7).
 fn check_g_residue(g: i32, p: &BigUint) -> bool {
@@ -99,7 +112,7 @@ fn check_g_residue(g: i32, p: &BigUint) -> bool {
 
 /// p and (p-1)/2 must both be prime, and p must be a full 2048-bit number.
 fn is_good_prime(p: &BigUint) -> bool {
-    if p.bits() != 2048 || p.bit(0) == false {
+    if p.bits() != 2048 || !p.bit(0) {
         return false;
     }
     if *p == telegram_dh_prime() {
@@ -112,15 +125,13 @@ fn is_good_prime(p: &BigUint) -> bool {
 pub struct MtProtoHandshake<'a> {
     transport: &'a mut IntermediateTransport,
     dc_id: i32,
+    /// Last unencrypted msg_id used; ids must be strictly increasing even within one second.
+    last_msg_id: i64,
 }
 
 impl<'a> MtProtoHandshake<'a> {
-    pub fn new(transport: &'a mut IntermediateTransport) -> Self {
-        Self { transport, dc_id: 2 }
-    }
-
     pub fn with_dc(transport: &'a mut IntermediateTransport, dc_id: i32) -> Self {
-        Self { transport, dc_id }
+        Self { transport, dc_id, last_msg_id: 0 }
     }
 
     /// Executes the full 6-step MTProto 2.0 Diffie-Hellman handshake with Telegram DC
@@ -298,7 +309,7 @@ impl<'a> MtProtoHandshake<'a> {
         let prime_for_check = prime.clone();
         let prime_ok = tokio::task::spawn_blocking(move || is_good_prime(&prime_for_check))
             .await
-            .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| Error::other(e.to_string()))?;
         if !prime_ok {
             return Err(Error::new(ErrorKind::InvalidData, "DH prime is not a safe prime"));
         }
@@ -306,29 +317,33 @@ impl<'a> MtProtoHandshake<'a> {
             return Err(Error::new(ErrorKind::InvalidData, "g_a is out of the allowed range"));
         }
 
-        // Compute Diffie-Hellman g_b = g^b mod p and auth_key = g_a^b mod p
-        let one = BigUint::from(1u32);
-        let b = loop {
-            let mut b_raw = [0u8; 256];
-            rand::thread_rng().fill_bytes(&mut b_raw);
-            let cand = BigUint::from_bytes_be(&b_raw);
-            if cand > one && cand < &prime - &one {
-                break cand;
+        // Compute Diffie-Hellman g_b = g^b mod p and auth_key = g_a^b mod p. Two 2048-bit modular
+        // exponentiations cost milliseconds of CPU, so they run off the async workers.
+        let (g_b_padded, auth_key) = tokio::task::spawn_blocking(move || -> Result<([u8; 256], [u8; 256]), Error> {
+            let one = BigUint::from(1u32);
+            let b = loop {
+                let mut b_raw = [0u8; 256];
+                rand::thread_rng().fill_bytes(&mut b_raw);
+                let cand = BigUint::from_bytes_be(&b_raw);
+                if cand > one && cand < &prime - &one {
+                    break cand;
+                }
+            };
+            let g_b_val = BigUint::from(g as u32).modpow(&b, &prime);
+            if !dh_value_in_range(&g_b_val, &prime) {
+                return Err(Error::new(ErrorKind::InvalidData, "g_b is out of the allowed range"));
             }
-        };
-        let g_big = BigUint::from(g as u32);
+            let g_b_vec = g_b_val.to_bytes_be();
+            let mut g_b_padded = [0u8; 256];
+            g_b_padded[256 - g_b_vec.len()..].copy_from_slice(&g_b_vec);
 
-        let g_b_val = g_big.modpow(&b, &prime);
-        if !dh_value_in_range(&g_b_val, &prime) {
-            return Err(Error::new(ErrorKind::InvalidData, "g_b is out of the allowed range"));
-        }
-        let g_b_vec = g_b_val.to_bytes_be();
-        let mut g_b_padded = [0u8; 256];
-        g_b_padded[256 - g_b_vec.len()..].copy_from_slice(&g_b_vec);
-
-        let g_ab_vec = g_a.modpow(&b, &prime).to_bytes_be();
-        let mut auth_key = [0u8; 256];
-        auth_key[256 - g_ab_vec.len()..].copy_from_slice(&g_ab_vec);
+            let g_ab_vec = g_a.modpow(&b, &prime).to_bytes_be();
+            let mut auth_key = [0u8; 256];
+            auth_key[256 - g_ab_vec.len()..].copy_from_slice(&g_ab_vec);
+            Ok((g_b_padded, auth_key))
+        })
+        .await
+        .map_err(Error::other)??;
 
         // 6. Send set_client_DH_params#f5045f1f
         let mut client_inner = BytesMut::with_capacity(320);
@@ -377,6 +392,11 @@ impl<'a> MtProtoHandshake<'a> {
         if gen_nonce != nonce || gen_server_nonce != server_nonce {
             return Err(Error::new(ErrorKind::InvalidData, "dh_gen_ok nonce mismatch"));
         }
+        // new_nonce_hash1 proves the server derived the same auth_key from our new_nonce.
+        let new_nonce_hash1 = read_int128(&mut gen_cursor).map_err(Self::tl_err)?;
+        if new_nonce_hash1 != dh_gen_ok_nonce_hash(&new_nonce, &auth_key) {
+            return Err(Error::new(ErrorKind::InvalidData, "dh_gen_ok new_nonce_hash1 mismatch"));
+        }
 
         let mut salt_bytes = [0u8; 8];
         for i in 0..8 {
@@ -397,15 +417,15 @@ impl<'a> MtProtoHandshake<'a> {
         })
     }
 
-    fn wrap_unencrypted(&self, payload: &[u8]) -> Vec<u8> {
+    fn wrap_unencrypted(&mut self, payload: &[u8]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(20 + payload.len());
         buf.extend_from_slice(&0i64.to_le_bytes()); // auth_key_id = 0
-        let msg_id = ((SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64)
-            << 32)
-            & !3i64;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        let mut msg_id = (((now.as_secs() as i64) << 32) + (((now.subsec_nanos() as i64) << 2) / 10)) & !3i64;
+        if msg_id <= self.last_msg_id {
+            msg_id = (self.last_msg_id + 4) & !3i64;
+        }
+        self.last_msg_id = msg_id;
         buf.extend_from_slice(&msg_id.to_le_bytes());
         buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         buf.extend_from_slice(payload);
@@ -442,6 +462,24 @@ impl<'a> MtProtoHandshake<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dh_gen_ok_hash_follows_the_specification_layout() {
+        let new_nonce = [0x11u8; 32];
+        let auth_key: [u8; 256] = std::array::from_fn(|i| i as u8);
+        // Independent spelling of the formula: SHA1(new_nonce + 01 + sha1(auth_key)[0..8])[4..20].
+        let aux = Sha1::digest(auth_key);
+        let mut input = new_nonce.to_vec();
+        input.push(1);
+        input.extend_from_slice(&aux[0..8]);
+        let expected = Sha1::digest(&input);
+        assert_eq!(dh_gen_ok_nonce_hash(&new_nonce, &auth_key).as_slice(), &expected[4..20]);
+        // Any change of key or nonce changes the hash.
+        let mut other = auth_key;
+        other[200] ^= 1;
+        assert_ne!(dh_gen_ok_nonce_hash(&new_nonce, &other), dh_gen_ok_nonce_hash(&new_nonce, &auth_key));
+        assert_ne!(dh_gen_ok_nonce_hash(&[0x12u8; 32], &auth_key), dh_gen_ok_nonce_hash(&new_nonce, &auth_key));
+    }
 
     #[test]
     fn dh_range_checks() {

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use sha1::{Digest, Sha1};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -23,11 +22,6 @@ pub struct MtProtoSession {
 }
 
 impl MtProtoSession {
-    /// Creates a new MTProto session.
-    pub fn new(auth_key: [u8; 256], server_salt: i64) -> Self {
-        Self::with_time_offset(auth_key, server_salt, 0)
-    }
-
     pub fn with_time_offset(auth_key: [u8; 256], server_salt: i64, time_offset: i64) -> Self {
         // Calculate auth_key_id: lower 64 bits (bytes 12..20) of SHA1(auth_key)
         // Matches DhHandshake::calc_key_id: as<int64>(auth_key_sha1.raw + 12)
@@ -89,9 +83,5 @@ impl MtProtoSession {
             self.seq_no = self.seq_no.wrapping_add(2);
         }
         res
-    }
-
-    pub fn current_seq_no(&self) -> i32 {
-        self.seq_no
     }
 }

@@ -287,3 +287,45 @@ What the changes were, and what each bought:
 Reproduce: `bench/build.sh` on the commit, then `bench/webhook.sh <dir>` three times under
 `flock /tmp/bench.lock`; allocations with the `heap.sh` method (heaptrack, N = 5000 and 25000) but
 driving `setWebhook` + the mock `getUpdates` instead of `sendMessage` (`bench/heap_webhook.sh`).
+
+## Round 4C results (MTProto layer, `src/mtproto/**`)
+
+Measured with the ignored tests in `src/mtproto/bench_tests.rs` against an in-process loopback mock DC
+(`src/mtproto/mock_dc.rs`: independent reference AES-IGE, its threads excluded from allocation and CPU
+accounting, no network, no DH handshake). Command:
+`flock /tmp/bench.lock cargo test --release bench_ -- --ignored --nocapture --test-threads=1`
+(`MTPROTO_BENCH_MIB` sets the e2e transfer size, default 128). Release test binaries were built with
+thin LTO / 16 codegen units for build speed, not with the repository's fat-LTO profile. Baseline
+(`c391915`, split but not optimised) and new (`5ff6b59`) binaries were run interleaved, 2 rounds x min of 3
+inside each run, under one hold of the lock; the machine was shared (load average ~7), so wall times are
+indicative while allocation counts and bytes are exact. "CPU" is user+sys of all client threads (10 ms
+resolution). The loopback mock carries a constant cost on the server side, so these numbers show the
+client; they say nothing about real network throughput.
+
+| metric (best of 6 runs) | baseline | new | change |
+|---|---|---|---|
+| AES-256-IGE encrypt 512 KiB | 639 MB/s, 1.22 allocs/call | 724 MB/s, 0 allocs | +13% |
+| AES-256-IGE decrypt 512 KiB | 637 MB/s, 1.22 allocs/call | 726 MB/s, 0 allocs | +14% |
+| pack 512 KiB message | 541 msg/s, 3.22 allocs, 1.57 MB allocated | 1006 msg/s, 0 allocs | +86% |
+| unpack 512 KiB message | 910 msg/s, 2.22 allocs, 1.05 MB allocated | 1008 msg/s, 0 allocs (includes a 512 KiB copy standing in for the socket read) | +11% |
+| pack 200 B message | 1.17 M msg/s, 3 allocs | 1.28 M msg/s, 0 allocs | +9% |
+| unpack 200 B message | 1.21 M msg/s, 2 allocs | 1.39 M msg/s, 0 allocs | +15% |
+| upload 128 MiB (256 parts): allocations / allocated bytes per part | 18.7 / 2.66 MB | 3.9 / 82 KB | -79% / -97% |
+| upload: peak live heap, process VmHWM | 27.6 MiB, 50.7 MB | 20.1 MiB, 39.0 MB | -27% / -23% |
+| upload: client CPU, wall | 0.38 s, 0.105 s | 0.30 s, 0.084 s | -21% / -20% |
+| upload: TCP connections per big upload | 10 (main + 8 workers + sendMedia) | 8 (measured in the mock) | -2 connects |
+| download 128 MiB (257 parts): allocations / allocated bytes per part | 18.1 / 2.11 MB | 3.2 / 41 KB | -82% / -98% |
+| download: peak live heap | 26.0-27.1 MiB | 9.0 MiB | -66% |
+| download: client CPU, wall | 0.46 s, 0.170 s | 0.36 s, 0.166 s | -22% / -2% |
+
+Memory is O(workers x chunk), independent of the file size: peak live heap of the final binary was
+20.06 MiB (upload) and 9.0 MiB (download) for 32, 128 and 256 MiB transfers alike (upload: 8 workers x
+(4 pipelined parts + 1 send buffer) x 512 KiB; download: 12 pooled chunk buffers + one receive buffer
+per connection).
+
+Not measured / caveats: nothing here ran against a real Telegram DC (no network or account), so TLS-free
+loopback throughput, real flood-wait behaviour and the new `new_nonce_hash1` handshake check are
+unit-tested but not validated live. The effect of the `pread` + `spawn_blocking` file reads versus the
+previous `tokio::fs` seek/read was not isolated; only the combined upload pipeline was measured. The
+download test reads the finished file back for verification, so process-level RSS for the download bench
+is not meaningful (the allocator-level peak above is taken before that read).
