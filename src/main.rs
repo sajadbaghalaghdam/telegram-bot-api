@@ -24,27 +24,44 @@ use crate::stats::ServerStats;
 use crate::storage::StorageEngine;
 use crate::watchdog::Watchdog;
 
+/// Upper bound for Tokio's blocking pool (`spawn_blocking`, `tokio::fs`, SQLite); the default is 512.
+const MAX_BLOCKING_THREADS: usize = 16;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Configure glibc allocator BEFORE spawning any Tokio threads so thread arenas stay strictly bounded
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    unsafe {
-        unsafe extern "C" {
-            fn mallopt(param: i32, value: i32) -> i32;
-        }
-        const M_TRIM_THRESHOLD: i32 = -1;
-        const M_MMAP_THRESHOLD: i32 = -3;
-        const M_ARENA_MAX: i32 = -8;
-        let _ = mallopt(M_ARENA_MAX, 4);
-        let _ = mallopt(M_MMAP_THRESHOLD, 131072);
-        let _ = mallopt(M_TRIM_THRESHOLD, 65536);
-    }
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+    configure_allocator(workers);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .max_blocking_threads(MAX_BLOCKING_THREADS)
         .enable_all()
         .build()?;
 
     rt.block_on(async_main())
 }
+
+/// Configures the glibc allocator BEFORE any Tokio thread exists.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn configure_allocator(workers: usize) {
+    unsafe extern "C" {
+        fn mallopt(param: i32, value: i32) -> i32;
+    }
+    const M_TRIM_THRESHOLD: i32 = -1;
+    const M_MMAP_THRESHOLD: i32 = -3;
+    const M_ARENA_MAX: i32 = -8;
+    // One arena per worker: with fewer arenas than threads the workers contend on arena locks
+    // (BENCHMARKS.md, Round 4D: M_ARENA_MAX 4 vs 8 workers).
+    let arenas = i32::try_from(workers).unwrap_or(i32::MAX);
+    // SAFETY: plain libc setters called once at start-up, before other threads are created.
+    unsafe {
+        let _ = mallopt(M_ARENA_MAX, arenas);
+        let _ = mallopt(M_MMAP_THRESHOLD, 131072);
+        let _ = mallopt(M_TRIM_THRESHOLD, 65536);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn configure_allocator(_workers: usize) {}
 
 /// Prints a startup error the way C++ does (message on stderr, exit code 1).
 fn fail(msg: impl std::fmt::Display) -> ! {

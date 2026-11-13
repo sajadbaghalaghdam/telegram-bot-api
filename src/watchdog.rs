@@ -72,7 +72,7 @@ impl Watchdog {
                 // Proactively release unused heap pages back to the Linux kernel every ~10 s
                 ticks += 1;
                 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-                if ticks % 2 == 0 {
+                if ticks.is_multiple_of(2) {
                     unsafe {
                         let _ = malloc_trim(0);
                     }
