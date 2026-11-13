@@ -1,18 +1,75 @@
 //! HTTP delivery of one update to the webhook URL, with retries.
-use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
+use reqwest::header::{HeaderName, HeaderValue, CONTENT_TYPE, RETRY_AFTER};
+use reqwest::{Client, Url};
 
 use super::ctx::Ctx;
-use super::queue::{Item, QueueId};
+use super::queue::Item;
 use super::reply::reply_method;
-use super::retry::{close_after_410, next_retry, should_drop, MAX_RESEND_TIMEOUT};
+use super::retry::{next_retry, should_drop, MAX_RESEND_TIMEOUT};
 use super::state::rand_range;
+use super::update::QueueId;
+
 /// Hard cap of the webhook reply body we are willing to read (only small JSON method calls matter).
 pub(super) const MAX_REPLY_BYTES: usize = 1 << 20;
+
+const SECRET_HEADER: HeaderName = HeaderName::from_static("x-telegram-bot-api-secret-token");
+
+/// Where updates go: parsed once per worker, so a delivery does no URL parsing and clones neither
+/// the URL nor the secret text.
+pub(super) struct Target {
+    client: Client,
+    url: Url,
+    secret: Option<HeaderValue>,
+}
+
+impl Target {
+    /// None when `url` is not a valid URL or the secret is not a valid header value.
+    pub(super) fn new(client: Client, url: &str, secret: Option<&str>) -> Option<Self> {
+        let secret = match secret.filter(|s| !s.is_empty()) {
+            Some(s) => {
+                let mut v = HeaderValue::from_str(s).ok()?;
+                v.set_sensitive(true);
+                Some(v)
+            }
+            None => None,
+        };
+        Some(Self { client, url: Url::parse(url).ok()?, secret })
+    }
+
+    /// POSTs one update; on 2xx returns the (size-capped) reply body.
+    async fn post(&self, body: Bytes) -> Result<Bytes, SendError> {
+        let mut req = self.client.post(self.url.clone()).header(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if let Some(s) = &self.secret {
+            req = req.header(SECRET_HEADER, s.clone());
+        }
+        let resp = req.body(body).send().await.map_err(|e| SendError {
+            msg: format!("Connection error: {}", e.without_url()),
+            status: None,
+            retry_after: 0,
+        })?;
+        let status = resp.status();
+        let retry_after = resp
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        if status.is_success() {
+            return Ok(read_capped(resp, MAX_REPLY_BYTES).await);
+        }
+        Err(SendError {
+            msg: format!("Wrong response from the webhook: {} {}", status.as_u16(), status.canonical_reason().unwrap_or("")),
+            status: Some(status.as_u16()),
+            retry_after,
+        })
+    }
+}
+
 struct SendError {
     msg: String,
     status: Option<u16>,
@@ -25,62 +82,37 @@ enum Delivery {
     Closed,
 }
 
-/// Reads a successful reply, giving up (empty result) as soon as it exceeds `cap` bytes.
+/// Reads a successful reply, giving up (empty result) as soon as it exceeds `cap` bytes. A reply
+/// that arrives in one chunk (the usual tiny one) is returned without copying.
 async fn read_capped(mut resp: reqwest::Response, cap: usize) -> Bytes {
-    if resp.content_length().is_some_and(|l| l > cap as u64) {
-        return Bytes::new();
+    match resp.content_length() {
+        Some(0) => return Bytes::new(),
+        Some(l) if l > cap as u64 => return Bytes::new(),
+        _ => {}
     }
-    let mut buf: Vec<u8> = Vec::new();
+    let first = match resp.chunk().await {
+        Ok(Some(c)) if c.len() <= cap => c,
+        _ => return Bytes::new(),
+    };
+    let mut joined: Option<Vec<u8>> = None;
     loop {
         match resp.chunk().await {
+            Ok(None) => return joined.map_or(first, Bytes::from),
             Ok(Some(c)) => {
+                let buf = joined.get_or_insert_with(|| first.to_vec());
                 if buf.len() + c.len() > cap {
                     return Bytes::new();
                 }
                 buf.extend_from_slice(&c);
             }
-            Ok(None) => break,
             Err(_) => return Bytes::new(),
         }
     }
-    Bytes::from(buf)
-}
-
-async fn send_one(ctx: &Ctx, body: Bytes) -> Result<Bytes, SendError> {
-    let mut req = ctx.client.post(&ctx.url).header("content-type", "application/json");
-    if let Some(ref s) = ctx.secret
-        && !s.is_empty() {
-            req = req.header("X-Telegram-Bot-Api-Secret-Token", s);
-        }
-    let resp = req.body(body).send().await.map_err(|e| SendError {
-        msg: format!("Connection error: {}", e.without_url()),
-        status: None,
-        retry_after: 0,
-    })?;
-    let status = resp.status();
-    let retry_after = resp
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .unwrap_or(0);
-    if status.is_success() {
-        return Ok(read_capped(resp, MAX_REPLY_BYTES).await);
-    }
-    Err(SendError {
-        msg: format!(
-            "Wrong response from the webhook: {} {}",
-            status.as_u16(),
-            status.canonical_reason().unwrap_or("")
-        ),
-        status: Some(status.as_u16()),
-        retry_after,
-    })
 }
 
 /// Delivers one update, retrying with backoff (the retry timer belongs to the update's queue;
 /// other queues are unaffected). The drop timeout counts from the update's own first-seen time.
-async fn deliver(ctx: &Arc<Ctx>, item: &Item) -> Delivery {
+async fn deliver(ctx: &Ctx, item: &Item) -> Delivery {
     let mut delay = 1u32;
     let mut fails = 0u32;
     loop {
@@ -88,46 +120,21 @@ async fn deliver(ctx: &Arc<Ctx>, item: &Item) -> Delivery {
             return Delivery::Closed;
         }
         let out = {
-            let _permit = ctx.sem.acquire().await;
-            send_one(ctx, item.body.clone()).await
+            let _permit = ctx.permits.acquire().await;
+            ctx.target.post(item.body.clone()).await
         };
         match out {
             Ok(reply) => {
-                if let Ok(mut f) = ctx.first_410.lock() {
-                    *f = None;
-                }
+                ctx.note_delivered();
                 if let Some(method) = reply_method(&reply) {
-                    // Fire and forget, as C++ WebhookActor.cpp:620-631: the result is ignored and
-                    // must never delay the delivery of the next update.
-                    let engine = Arc::clone(&ctx.engine);
-                    let token = ctx.token.clone();
-                    tokio::spawn(async move {
-                        let _ = engine
-                            .universal_call(&token, &method, &HashMap::new(), None, Some("application/json"), reply)
-                            .await;
-                    });
+                    ctx.replies.submit(method, reply);
                 }
                 return Delivery::Delivered;
             }
             Err(e) => {
                 ctx.state.record_error(&e.msg);
-                if e.status == Some(410) {
-                    let close = {
-                        let mut f = ctx.first_410.lock().unwrap_or_else(|p| p.into_inner());
-                        match *f {
-                            None => {
-                                *f = Some(Instant::now());
-                                false
-                            }
-                            Some(t) => close_after_410(t.elapsed().as_secs()),
-                        }
-                    };
-                    if close {
-                        ctx.closed.store(true, Ordering::Relaxed);
-                        return Delivery::Closed;
-                    }
-                } else if let Ok(mut f) = ctx.first_410.lock() {
-                    *f = None;
+                if ctx.note_failure(e.status == Some(410)) {
+                    return Delivery::Closed;
                 }
                 let (nd, eff) = next_retry(delay, fails, e.retry_after, rand_range(MAX_RESEND_TIMEOUT, MAX_RESEND_TIMEOUT * 2));
                 if should_drop(item.first_seen.elapsed().as_secs(), eff) {
@@ -146,16 +153,14 @@ async fn deliver(ctx: &Arc<Ctx>, item: &Item) -> Delivery {
 
 /// Drains one queue in FIFO order; the queue's retries never hold up any other queue.
 pub(super) async fn run_queue(ctx: Arc<Ctx>, qid: QueueId) {
-    loop {
-        let item = ctx.lock().next(qid);
-        let Some(item) = item else { return };
+    let mut next = ctx.first(qid);
+    while let Some(item) = next {
         match deliver(&ctx, &item).await {
             Delivery::Closed => {
                 ctx.closed_notify.notify_one();
                 return;
             }
-            Delivery::Delivered | Delivery::Dropped => ctx.finish(item.id),
+            Delivery::Delivered | Delivery::Dropped => next = ctx.finish_and_next(qid, item.id),
         }
     }
 }
-

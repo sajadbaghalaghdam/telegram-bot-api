@@ -1,48 +1,14 @@
 //! Per-chat delivery queues and the scheduler state that owns them.
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use bytes::Bytes;
-use serde_json::Value;
 
+use super::update::QueueId;
 use super::window::{Window, POLL_LIMIT};
 
-fn id_of(v: &Value) -> Option<i64> {
-    v.get("id").and_then(|x| x.as_i64())
-}
-
-/// Ordering key of an update: its chat (or sender when there is no chat).
-pub fn queue_key(update: &Value) -> Option<i64> {
-    let obj = update.as_object()?;
-    for (k, v) in obj {
-        if k == "update_id" || !v.is_object() {
-            continue;
-        }
-        if let Some(id) = v.get("chat").and_then(id_of) {
-            return Some(id);
-        }
-        if let Some(id) = v.get("message").and_then(|m| m.get("chat")).and_then(id_of) {
-            return Some(id);
-        }
-        if let Some(id) = v.get("from").and_then(id_of) {
-            return Some(id);
-        }
-    }
-    None
-}
-
-/// Identity of a delivery queue. Updates of one chat are delivered strictly in order; updates
-/// without any chat/sender get a queue of their own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum QueueId {
-    Chat(i64),
-    Solo(i64),
-}
-
-pub fn queue_id(update: &Value, update_id: i64) -> QueueId {
-    queue_key(update).map(QueueId::Chat).unwrap_or(QueueId::Solo(update_id))
-}
-
+/// One loaded update: the exact bytes upstream sent (a slice of the poll reply, not a copy).
 pub(super) struct Item {
     pub(super) id: i64,
     pub(super) body: Bytes,
@@ -51,15 +17,20 @@ pub(super) struct Item {
 }
 
 /// Scheduler state: the offset window plus the per-queue FIFOs. A queue key exists exactly while
-/// its task is running.
-pub(super) struct Inner {
+/// its task is running, so an idle bot holds no per-chat state.
+pub(super) struct Scheduler {
     pub(super) window: Window,
-    pub(super) queues: HashMap<QueueId, VecDeque<Item>>,
+    queues: HashMap<QueueId, VecDeque<Item>>,
 }
 
-impl Inner {
+impl Scheduler {
     pub(super) fn new(base: i64) -> Self {
         Self { window: Window::new(base), queues: HashMap::new() }
+    }
+
+    /// True when upstream re-sent an update that is already loaded or finished.
+    pub(super) fn is_known(&self, id: i64) -> bool {
+        self.window.is_known(id)
     }
 
     /// None: duplicate. Some(true): a new queue was created and its task must be spawned.
@@ -67,18 +38,33 @@ impl Inner {
         if !self.window.add(item.id) {
             return None;
         }
-        let spawn = !self.queues.contains_key(&qid);
-        self.queues.entry(qid).or_default().push_back(item);
-        Some(spawn)
+        match self.queues.entry(qid) {
+            Entry::Occupied(mut q) => {
+                q.get_mut().push_back(item);
+                Some(false)
+            }
+            Entry::Vacant(v) => {
+                v.insert(VecDeque::from([item]));
+                Some(true)
+            }
+        }
     }
 
-    /// Next item of a queue; removes the (empty) queue, which tells `admit` to spawn a new task.
-    pub(super) fn next(&mut self, qid: QueueId) -> Option<Item> {
-        let item = self.queues.get_mut(&qid)?.pop_front();
-        if item.is_none() {
+    /// First item of a freshly spawned queue task.
+    pub(super) fn first(&mut self, qid: QueueId) -> Option<Item> {
+        self.queues.get_mut(&qid)?.pop_front()
+    }
+
+    /// Marks `done` finished (delivered or dropped) and returns the next item of the queue. An
+    /// empty queue is removed, which tells `admit` to spawn a new task for the next update.
+    pub(super) fn finish_and_next(&mut self, qid: QueueId, done: i64) -> Option<Item> {
+        self.window.finish(done);
+        let q = self.queues.get_mut(&qid)?;
+        let next = q.pop_front();
+        if next.is_none() {
             self.queues.remove(&qid);
         }
-        item
+        next
     }
 
     /// `(offset, limit)` for the next poll, or None while the window is full: at most `cap`
@@ -92,68 +78,57 @@ impl Inner {
         }
         Some((self.window.offset(), POLL_LIMIT.min(occ + room)))
     }
+
+    #[cfg(test)]
+    fn queue_count(&self) -> usize {
+        self.queues.len()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn item(id: i64) -> Item {
         Item { id, body: Bytes::from(id.to_string()), first_seen: Instant::now() }
     }
 
     #[test]
-    fn queue_ids() {
-        let u = |v: Value| {
-            let id = v["update_id"].as_i64().unwrap();
-            queue_id(&v, id)
-        };
-        assert_eq!(u(json!({"update_id":1,"message":{"chat":{"id":10}}})), QueueId::Chat(10));
-        assert_eq!(u(json!({"update_id":3,"edited_message":{"chat":{"id":10}}})), QueueId::Chat(10));
-        assert_eq!(u(json!({"update_id":4,"callback_query":{"from":{"id":5},"message":{"chat":{"id":20}}}})), QueueId::Chat(20));
-        assert_eq!(u(json!({"update_id":5,"inline_query":{"from":{"id":7}}})), QueueId::Chat(7));
-        assert_eq!(u(json!({"update_id":6,"poll":{"id":"x"}})), QueueId::Solo(6));
-    }
-
-    #[test]
     fn queue_is_fifo_and_independent_per_chat() {
-        let mut inner = Inner::new(0);
+        let mut s = Scheduler::new(0);
         let (a, b) = (QueueId::Chat(10), QueueId::Chat(20));
-        assert_eq!(inner.admit(a, item(1)), Some(true));
-        assert_eq!(inner.admit(b, item(2)), Some(true));
-        assert_eq!(inner.admit(a, item(3)), Some(false));
-        assert_eq!(inner.admit(a, item(4)), Some(false));
+        assert_eq!(s.admit(a, item(1)), Some(true));
+        assert_eq!(s.admit(b, item(2)), Some(true));
+        assert_eq!(s.admit(a, item(3)), Some(false));
+        assert_eq!(s.admit(a, item(4)), Some(false));
         // duplicates (upstream re-sends unconfirmed updates) are ignored
-        assert_eq!(inner.admit(a, item(3)), None);
+        assert_eq!(s.admit(a, item(3)), None);
         // chat a is strictly ordered, chat b is not held up behind it
-        assert_eq!(inner.next(a).unwrap().id, 1);
-        assert_eq!(inner.next(b).unwrap().id, 2);
-        assert_eq!(inner.next(a).unwrap().id, 3);
-        assert_eq!(inner.next(a).unwrap().id, 4);
-        assert!(inner.next(a).is_none());
-        // an emptied queue is gone, so the next admit spawns a fresh task
-        assert_eq!(inner.admit(a, item(5)), Some(true));
+        assert_eq!(s.first(a).unwrap().id, 1);
+        assert_eq!(s.first(b).unwrap().id, 2);
+        assert_eq!(s.finish_and_next(a, 1).unwrap().id, 3);
+        assert_eq!(s.finish_and_next(a, 3).unwrap().id, 4);
+        assert!(s.finish_and_next(a, 4).is_none());
+        assert!(s.finish_and_next(b, 2).is_none());
+        // emptied queues are gone (nothing is retained per idle chat) ...
+        assert_eq!(s.queue_count(), 0);
+        // ... so the next admit spawns a fresh task
+        assert_eq!(s.admit(a, item(5)), Some(true));
     }
 
     #[test]
     fn window_respects_initial_offset_and_bounds() {
-        let mut w = Window::new(100);
-        assert_eq!(w.offset(), 100);
-        assert!(!w.add(99));
-        assert!(w.add(100));
-        assert_eq!(w.unfinished(), 1);
-        let mut inner = Inner::new(0);
+        let mut s = Scheduler::new(0);
         // cap = 2 * max_connections: room shrinks as updates are loaded
-        assert_eq!(inner.poll_window(4), Some((0, 4)));
+        assert_eq!(s.poll_window(4), Some((0, 4)));
         for id in 1..=4 {
-            inner.admit(QueueId::Solo(id), item(id));
+            s.admit(QueueId::Solo(id), item(id));
         }
-        assert_eq!(inner.poll_window(4), None, "loaded updates reached 2*max_connections");
-        inner.window.finish(1);
-        assert_eq!(inner.poll_window(4), Some((2, 4)));
+        assert_eq!(s.poll_window(4), None, "loaded updates reached 2*max_connections");
+        s.window.finish(1);
+        assert_eq!(s.poll_window(4), Some((2, 4)));
         // limit counts ids upstream re-sends (everything >= offset)
-        let mut big = Inner::new(0);
+        let mut big = Scheduler::new(0);
         for id in 1..=99 {
             big.admit(QueueId::Solo(id), item(id));
         }

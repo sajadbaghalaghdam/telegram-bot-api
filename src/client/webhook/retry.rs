@@ -1,5 +1,6 @@
 //! Pure retry / drop / backoff rules (C++ `WebhookActor` constants and `on_update_error`).
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 /// C++ WEBHOOK_MAX_RESEND_TIMEOUT
 pub const MAX_RESEND_TIMEOUT: u32 = 60;
@@ -39,6 +40,44 @@ pub fn poll_backoff(consecutive_fails: u32, unit_rand: f64) -> Duration {
     Duration::from_secs_f64((base * jitter).max(0.5))
 }
 
+/// Tracks the run of consecutive 410 replies of a webhook without taking a lock (every delivery
+/// reports its outcome here): the webhook is closed once 410s have lasted longer than
+/// [`DROP_TIMEOUT_SECS`].
+pub struct GoneTracker {
+    started: Instant,
+    /// Milliseconds since `started`, plus one, of the first 410 of the current run; 0 = no run.
+    first_ms: AtomicU64,
+}
+
+impl GoneTracker {
+    pub fn new() -> Self {
+        Self { started: Instant::now(), first_ms: AtomicU64::new(0) }
+    }
+
+    /// Any non-410 outcome ends the run.
+    pub fn delivered(&self) {
+        if self.first_ms.load(Ordering::Relaxed) != 0 {
+            self.first_ms.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// Records a failed attempt; true when the webhook has to be closed.
+    pub fn failed(&self, is_410: bool) -> bool {
+        if !is_410 {
+            self.delivered();
+            return false;
+        }
+        self.failed_at(self.started.elapsed().as_millis() as u64)
+    }
+
+    fn failed_at(&self, now_ms: u64) -> bool {
+        match self.first_ms.compare_exchange(0, now_ms + 1, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => false,
+            Err(first) => close_after_410((now_ms + 1).saturating_sub(first) / 1000),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,5 +111,19 @@ mod tests {
         assert!(poll_backoff(30, 1.0) <= Duration::from_secs(60));
         assert!(poll_backoff(30, 0.0) >= Duration::from_secs(30));
         assert!(poll_backoff(0, 0.0) >= Duration::from_millis(500));
+    }
+
+    #[test]
+    fn gone_tracker_closes_after_the_drop_timeout_only() {
+        let t = GoneTracker::new();
+        assert!(!t.failed_at(0), "first 410 starts the run");
+        assert!(!t.failed_at(60_000));
+        assert!(!t.failed_at(DROP_TIMEOUT_SECS * 1000), "exactly the timeout is not enough");
+        assert!(t.failed_at(DROP_TIMEOUT_SECS * 1000 + 2000));
+        // a successful delivery (or any other error) ends the run
+        t.delivered();
+        assert!(!t.failed_at(DROP_TIMEOUT_SECS * 1000 + 5000));
+        assert!(!t.failed(false));
+        assert!(!t.failed_at(DROP_TIMEOUT_SECS * 1000 + 9000));
     }
 }

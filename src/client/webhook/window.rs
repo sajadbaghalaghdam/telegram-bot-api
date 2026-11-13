@@ -2,14 +2,14 @@
 use std::collections::BTreeSet;
 
 /// Upper bound of `limit` of one getUpdates call (Bot API).
-pub const POLL_LIMIT: usize = 100;
+pub(super) const POLL_LIMIT: usize = 100;
 
 /// Tracks which update ids are loaded and which are finished (delivered or dropped), so that the
 /// getUpdates offset only ever confirms updates below the lowest id that is still unfinished
 /// (a watermark): a slow or failing chat can never cause an update of another chat to be lost,
 /// and nothing is confirmed upstream before it was delivered (at-least-once).
 #[derive(Debug)]
-pub struct Window {
+pub(super) struct Window {
     /// Everything below this id is finished and confirmed.
     base: i64,
     max_seen: i64,
@@ -19,22 +19,22 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn new(base: i64) -> Self {
+    pub(super) fn new(base: i64) -> Self {
         Self { base, max_seen: base - 1, unfinished: BTreeSet::new(), finished: BTreeSet::new() }
     }
 
     /// The getUpdates `offset` that is safe to send.
-    pub fn offset(&self) -> i64 {
+    pub(super) fn offset(&self) -> i64 {
         self.unfinished.first().copied().unwrap_or(self.max_seen + 1).max(self.base)
     }
 
-    pub fn is_known(&self, id: i64) -> bool {
+    pub(super) fn is_known(&self, id: i64) -> bool {
         id < self.offset() || self.unfinished.contains(&id) || self.finished.contains(&id)
     }
 
     /// Registers a freshly loaded update; false if it was already seen (upstream re-sends
     /// everything that is not confirmed yet).
-    pub fn add(&mut self, id: i64) -> bool {
+    pub(super) fn add(&mut self, id: i64) -> bool {
         if self.is_known(id) {
             return false;
         }
@@ -43,21 +43,23 @@ impl Window {
         true
     }
 
-    pub fn finish(&mut self, id: i64) {
+    pub(super) fn finish(&mut self, id: i64) {
         if self.unfinished.remove(&id) {
             self.finished.insert(id);
         }
         self.base = self.offset();
-        self.finished = self.finished.split_off(&self.base);
+        while self.finished.first().is_some_and(|&f| f < self.base) {
+            self.finished.pop_first();
+        }
     }
 
     /// Loaded and not yet delivered/dropped.
-    pub fn unfinished(&self) -> usize {
+    pub(super) fn unfinished(&self) -> usize {
         self.unfinished.len()
     }
 
     /// Ids upstream will return again on the next poll (everything at or above the offset).
-    pub fn occupancy(&self) -> usize {
+    pub(super) fn occupancy(&self) -> usize {
         self.unfinished.len() + self.finished.len()
     }
 }
