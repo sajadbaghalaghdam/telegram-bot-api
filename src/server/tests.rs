@@ -551,6 +551,50 @@ async fn test_dc_files_come_from_the_configured_upstream() {
 }
 
 #[tokio::test]
+async fn oversized_buffered_body_is_rejected_up_front() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let up = echo_upstream().await;
+    let app = TestApp::start("bodylimit", false, &up).await;
+    let addr = app.base.trim_start_matches("http://").to_string();
+    let mut s = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let head = format!(
+        "POST /bot{TOKEN}/sendMessage HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 70000000\r\nConnection: close\r\n\r\n"
+    );
+    s.write_all(head.as_bytes()).await.unwrap();
+    let mut resp = Vec::new();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), s.read_to_end(&mut resp)).await;
+    let text = String::from_utf8_lossy(&resp);
+    assert!(text.starts_with("HTTP/1.1 413"), "{text}");
+    assert!(text.contains(r#""description":"Request Entity Too Large""#), "{text}");
+    assert!(up.requests().is_empty());
+}
+
+#[tokio::test]
+async fn oversized_text_field_of_a_large_upload_is_rejected() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let up = echo_upstream().await;
+    let app = TestApp::start("textlimit", false, &up).await;
+    let addr = app.base.trim_start_matches("http://").to_string();
+    let mut s = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let head = format!(
+        "POST /bot{TOKEN}/sendVideo HTTP/1.1\r\nHost: x\r\nContent-Type: multipart/form-data; boundary=B\r\nContent-Length: 60000000\r\nConnection: close\r\n\r\n"
+    );
+    s.write_all(head.as_bytes()).await.unwrap();
+    s.write_all(b"--B\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n").await.unwrap();
+    // 2 MiB of caption, more than the 1 MiB limit; the server answers before it is all sent.
+    for _ in 0..32 {
+        if s.write_all(&[b'a'; 64 * 1024]).await.is_err() {
+            break;
+        }
+    }
+    let mut resp = Vec::new();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), s.read_to_end(&mut resp)).await;
+    let text = String::from_utf8_lossy(&resp);
+    assert!(text.starts_with("HTTP/1.1 400"), "{text}");
+    assert!(text.contains("Multipart text field is too long"), "{text}");
+}
+
+#[tokio::test]
 async fn aborted_large_multipart_upload_leaves_no_temp_file() {
     let up = echo_upstream().await;
     let app = TestApp::start("largeabort", false, &up).await;

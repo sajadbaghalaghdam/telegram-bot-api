@@ -12,6 +12,19 @@ use crate::client::relay::RelayCall;
 use crate::error::{TelegramError, TelegramResult};
 use crate::server::SharedState;
 
+/// Largest request body that is buffered in memory (multipart uploads above 49 MB are spooled to
+/// disk by `large_upload` instead). Bounds the memory one request can pin.
+const MAX_BUFFERED_BODY: usize = 64 * 1024 * 1024;
+
+/// The `Content-Length` of a request (0 when absent or malformed).
+pub(super) fn declared_length(headers: &axum::http::HeaderMap) -> u64 {
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
 /// `(token, method)` from the route captures, borrowed (no allocation). The token still carries an
 /// optional `bot` prefix.
 pub(super) fn token_and_method(params: &RawPathParams) -> (&str, &str) {
@@ -70,7 +83,14 @@ pub async fn relay_handler(
         return large_upload::relay(&state, token, method, &query_map, req).await;
     }
 
-    let body = axum::body::to_bytes(body, usize::MAX)
+    if declared_length(&parts.headers) > MAX_BUFFERED_BODY as u64 {
+        return Err(TelegramError::ApiError {
+            code: 413,
+            description: "Request Entity Too Large".to_string(),
+            parameters: None,
+        });
+    }
+    let body = axum::body::to_bytes(body, MAX_BUFFERED_BODY)
         .await
         .map_err(|e| TelegramError::BadRequest(format!("Failed to read request body: {e}")))?;
 

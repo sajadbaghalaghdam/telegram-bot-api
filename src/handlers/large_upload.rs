@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use axum::{
-    extract::{FromRequest, Multipart, Request},
+    extract::{multipart::Field, FromRequest, Multipart, Request},
     http::{header, HeaderMap, StatusCode},
     response::Response,
 };
@@ -19,16 +19,13 @@ use crate::server::SharedState;
 
 /// Bodies above this size take the MTProto path.
 const THRESHOLD: u64 = 49 * 1024 * 1024;
+/// Longest accepted text field (chat_id, caption, reply_markup, ...) of a large upload.
+const MAX_TEXT_FIELD: usize = 1024 * 1024;
 
 /// Whether a request is a multipart upload large enough for the MTProto path.
 pub fn applies(content_type: Option<&str>, headers: &HeaderMap) -> bool {
     content_type.is_some_and(|c| c.starts_with("multipart/form-data"))
-        && headers
-            .get(header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0)
-            > THRESHOLD
+        && super::generic::declared_length(headers) > THRESHOLD
 }
 
 /// The multipart field carrying the media of a send method (None: unknown method, the first file
@@ -49,6 +46,22 @@ fn media_param(method: &str) -> Option<&'static str> {
 
 fn is_media_field(media_param: Option<&str>, field_name: &str) -> bool {
     media_param.is_none_or(|m| m == field_name)
+}
+
+/// Reads a text field of at most `MAX_TEXT_FIELD` bytes (`None`: not valid UTF-8, ignored).
+async fn text_of(field: &mut Field<'_>) -> TelegramResult<Option<String>> {
+    let mut buf = Vec::new();
+    while let Some(chunk) = field
+        .chunk()
+        .await
+        .map_err(|e| TelegramError::BadRequest(format!("Multipart chunk error: {e}")))?
+    {
+        if buf.len() + chunk.len() > MAX_TEXT_FIELD {
+            return Err(TelegramError::BadRequest("Multipart text field is too long".to_string()));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8(buf).ok())
 }
 
 /// What the multipart body carried besides the media file.
@@ -105,15 +118,15 @@ async fn receive(
                 .await
                 .map_err(|e| TelegramError::Internal(format!("Temp flush error: {e}")))?;
         } else if name == "chat_id" {
-            if let Ok(txt) = field.text().await {
+            if let Some(txt) = text_of(&mut field).await? {
                 got.chat_id = txt;
             }
         } else if name == "caption" {
-            if let Ok(txt) = field.text().await {
+            if let Some(txt) = text_of(&mut field).await? {
                 got.caption = txt;
             }
         } else if !name.is_empty()
-            && let Ok(txt) = field.text().await
+            && let Some(txt) = text_of(&mut field).await?
         {
             let val = serde_json::from_str::<Value>(&txt).unwrap_or(Value::String(txt));
             got.extra_fields.insert(name, val);
