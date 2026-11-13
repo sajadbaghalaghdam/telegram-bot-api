@@ -363,7 +363,9 @@ pub async fn download_large_file_via_mtproto(
 
     let file_name = format!("file_{}.{}", loc.doc_id, ext);
     let target_path = target_dir.join(&file_name);
-    let part_path = target_dir.join(format!(".{}.part", file_name));
+    // Unique per call: two concurrent downloads of the same file must not truncate or unlink each
+    // other's partial file (the first to finish renames its own over the target).
+    let part_path = target_dir.join(format!(".{}.{:016x}.part", file_name, rand::random::<u64>()));
 
     // If already fully downloaded and non-empty, return cached disk file
     if let Ok(meta) = fs::metadata(&target_path).await

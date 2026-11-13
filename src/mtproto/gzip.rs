@@ -219,9 +219,16 @@ fn inflate_raw(input: &[u8], max_out: usize) -> Result<Vec<u8>, Error> {
                         break;
                     } else {
                         let len_idx = sym - 257;
+                        // Symbols 286/287 (and distance codes 30/31) exist in the fixed tables but are invalid.
+                        if len_idx >= LEN_BASE.len() {
+                            return Err(Error::new(ErrorKind::InvalidData, "Invalid length symbol"));
+                        }
                         let length = LEN_BASE[len_idx] as usize
                             + br.read_bits(LEN_EXTRA[len_idx])? as usize;
                         let dist_sym = dist_table.decode(&mut br)? as usize;
+                        if dist_sym >= DIST_BASE.len() {
+                            return Err(Error::new(ErrorKind::InvalidData, "Invalid distance symbol"));
+                        }
                         let dist = DIST_BASE[dist_sym] as usize
                             + br.read_bits(DIST_EXTRA[dist_sym])? as usize;
                         if out.len() + length > max_out {
@@ -262,5 +269,48 @@ mod tests {
         assert_eq!(out, b"hello hello hello hello");
         assert!(gunzip_pure_rust(&HELLO_GZ, 10).is_err(), "limit must be enforced");
         assert!(gunzip_pure_rust(&HELLO_GZ[..12], 1024).is_err(), "truncated input must fail");
+    }
+
+    /// Packs a fixed-Huffman deflate block into a gzip body: `bits` are (value, width) pairs,
+    /// deflate fields LSB-first and Huffman codes MSB-first (callers pass codes already reversed).
+    fn gz_with_bits(bits: &[(u32, u32)]) -> Vec<u8> {
+        let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
+        let (mut acc, mut n) = (0u64, 0u32);
+        for &(v, w) in bits {
+            acc |= (v as u64) << n;
+            n += w;
+            while n >= 8 {
+                out.push(acc as u8);
+                acc >>= 8;
+                n -= 8;
+            }
+        }
+        if n > 0 {
+            out.push(acc as u8);
+        }
+        out.extend_from_slice(&[0; 8]); // CRC32 + ISIZE (not verified by the decoder)
+        out
+    }
+
+    fn rev(code: u32, width: u32) -> u32 {
+        (0..width).fold(0, |r, i| r | (((code >> i) & 1) << (width - 1 - i)))
+    }
+
+    /// A malformed stream from the server must be an error, never a panic: the release profile
+    /// aborts the whole process on panic.
+    #[test]
+    fn invalid_length_and_distance_symbols_are_errors_not_panics() {
+        // Fixed block header: BFINAL=1, BTYPE=01.
+        let header = [(1, 1), (1, 2)];
+        // Length symbol 286 (8-bit fixed code 0b1100_0110).
+        let mut bits = header.to_vec();
+        bits.push((rev(0b1100_0110, 8), 8));
+        assert!(gunzip_pure_rust(&gz_with_bits(&bits), 1024).is_err(), "length symbol 286");
+
+        // Valid length symbol 257 (7-bit code 0b0000_001) followed by distance symbol 31 (5 bits).
+        let mut bits = header.to_vec();
+        bits.push((rev(0b000_0001, 7), 7));
+        bits.push((rev(31, 5), 5));
+        assert!(gunzip_pure_rust(&gz_with_bits(&bits), 1024).is_err(), "distance symbol 31");
     }
 }
