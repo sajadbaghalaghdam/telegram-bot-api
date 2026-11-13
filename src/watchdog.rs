@@ -1,6 +1,6 @@
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -8,21 +8,20 @@ unsafe extern "C" {
     fn malloc_trim(pad: usize) -> i32;
 }
 
-/// Async Watchdog monitoring health, responsiveness, and proactive OS page reclamation
+/// Async Watchdog monitoring health, responsiveness, and proactive OS page reclamation.
+/// Uses a monotonic clock (`Instant`), so wall-clock jumps (NTP, manual changes) cannot cause false alarms.
 pub struct Watchdog {
-    last_kick_time: AtomicI64,
+    start: Instant,
+    /// Milliseconds since `start` at the last kick.
+    last_kick_ms: AtomicU64,
     timeout_secs: i64,
 }
 
 impl Watchdog {
     pub fn new(timeout_secs: i64) -> Arc<Self> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-
         Arc::new(Self {
-            last_kick_time: AtomicI64::new(now),
+            start: Instant::now(),
+            last_kick_ms: AtomicU64::new(0),
             timeout_secs,
         })
     }
@@ -30,20 +29,13 @@ impl Watchdog {
     /// Kicks the watchdog to reset the timer
     #[inline]
     pub fn kick(&self) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        self.last_kick_time.store(now, Ordering::Relaxed);
+        self.last_kick_ms.store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
 
     /// Seconds since the last kick.
     fn idle_secs(&self) -> i64 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        now - self.last_kick_time.load(Ordering::Relaxed)
+        let now = self.start.elapsed().as_millis() as u64;
+        (now.saturating_sub(self.last_kick_ms.load(Ordering::Relaxed)) / 1000) as i64
     }
 
     /// Spawns the liveness heartbeat (a task on the Tokio runtime that kicks every second) and an
@@ -58,7 +50,7 @@ impl Watchdog {
             }
         });
 
-        let _ = std::thread::Builder::new().name("watchdog".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name("watchdog".into()).spawn(move || {
             let mut ticks = 0u64;
             let mut alerted = false;
             loop {
@@ -89,6 +81,9 @@ impl Watchdog {
                 let _ = ticks;
             }
         });
+        if let Err(e) = spawned {
+            tracing::error!("Failed to spawn watchdog thread, stall detection and heap trimming are disabled: {e}");
+        }
     }
 }
 
@@ -99,9 +94,9 @@ mod tests {
     #[test]
     fn idle_grows_until_kicked() {
         let w = Watchdog::new(60);
-        w.last_kick_time.store(w.last_kick_time.load(Ordering::Relaxed) - 100, Ordering::Relaxed);
-        assert!(w.idle_secs() >= 100);
+        std::thread::sleep(Duration::from_millis(1100));
+        assert!(w.idle_secs() >= 1);
         w.kick();
-        assert!(w.idle_secs() <= 1);
+        assert_eq!(w.idle_secs(), 0);
     }
 }
