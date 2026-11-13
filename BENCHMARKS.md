@@ -234,3 +234,58 @@ the suite (the commit message of an optimisation should quote before/after from 
   and results depend on oha and the mock competing for the same 8 vCPUs.
 * Runtime binary is the patched copy with debug symbols (44 MB on disk); only static numbers use the
   repository's stripped 7.7 MB binary.
+
+## 7. Round 4A results (HTTP relay core: `src/client/*` except webhook, `src/handlers`, `src/server.rs`)
+
+Branch `worktree-agent-a008174bab5de4129` (13 commits on top of `a91bf81`). Same scenarios as
+section 3, same bench/ scripts, mock upstream on plain HTTP. The machine was heavily shared during this round (load
+average 5-10, other agents building), so **absolute req/s varied +-20% between runs**. Therefore:
+
+* allocation counts (heaptrack slope, N=5,000 and 25,000 sendMessage c=32) are the reliable metric;
+* CPU per request (server `utime+stime` / requests, interleaved A/B runs of base and final binary,
+  c=32, 8 s each, 4-5 pairs) is the reliable *throughput* metric; differences below about +-4% are noise here.
+
+### 7.1 Allocations per relayed sendMessage (heaptrack slope)
+
+| step | allocs/request |
+|---|---|
+| baseline (`67c2155`) | 123.0 |
+| engine split + `RelayCall`, allocation-free method matching | 122.0 |
+| typed minimal reply scan instead of `serde_json::Value` (handler, `note_upstream_reply`, logOut) | 96.0 |
+| single-`Arc` `AppState` | 96.0 (neutral) |
+| `RawPathParams`, lazy query map, borrowed content type, alloc-free token validation | 91.0 |
+| local-file blocking-pool work, atomic getFile download, body bounds, manager single-refresh | 91.0 |
+| *(tried and reverted)* upstream URL pre-parsed once, `Url` clone + `set_path` | 89.0, no CPU change |
+
+### 7.2 Final binary vs baseline binary (interleaved A/B, median of runs; `user_us`/`sys_us` = server CPU per request)
+
+| scenario (c=32) | baseline | final | verdict |
+|---|---|---|---|
+| sendMessage, CPU per request (5 pairs) | 102.9 us (user 59.2, sys 43.8) | 104.8 us (user 59.9, sys 44.5) | within noise |
+| sendMessage, p99 | 1.65-3.67 ms | 1.58-3.89 ms | within noise |
+| getMe from cache (4 pairs) | 25.2 us/req | 25.8 us/req | within noise |
+| sendMessage 50 KB body (4 pairs) | 125.5 us/req, RSS 17-19.5 MB | 127.5 us/req, RSS 19.3-20.0 MB | within noise |
+| `--local` file download 64 KiB (3 pairs) | 183-200 us/req | 194-199 us/req | within noise |
+| `--local` getFile cache hit (3 pairs) | 57-62 us/req | 55-57 us/req | -4% (marginal) |
+| RSS after sendMessage load | 14.4-14.6 MB | 14.6-15.0 MB | +0.3 MB |
+
+**Conclusion of the round:** the relay core is now split into small modules, has 26% fewer allocations per request and
+several resource-safety fixes (below), but **no measurable CPU or throughput gain**: user-space CPU per relayed request
+stayed at ~59 us. The profile in section 3.4 attributed ~12% to malloc/free; removing a quarter of the allocations is
+below what this shared machine can resolve. What remains per request (about 42 of the 91 allocations) is inside
+reqwest/hyper's client path (request/header maps, URL clone, pool checkout, response body), axum's per-request
+`clone_box` and the `from_fn` telemetry future, plus ~44 us of kernel TCP time; none of that is reachable from the
+files owned by this round. The levers with a real expected effect are outside it: `M_ARENA_MAX` / `malloc_trim` in
+`main.rs`/`watchdog.rs` (candidate #2), and the `Mutex` ring in `stats.rs` that `telemetry_middleware` takes twice per request.
+
+### 7.3 Behaviour/resource fixes made on the way (each has a regression test)
+
+* Large multipart upload spool file leaked on any mid-stream error or client disconnect; now an RAII guard
+  (`aborted_large_multipart_upload_leaves_no_temp_file`).
+* Remote-URL -> MTProto path uploaded a truncated file when the download stream broke; now an error.
+* `--local` getFile persisted truncated downloads (errors ignored) and raced on the target path; now temp file + rename
+  (`local_mode_interrupted_download_is_neither_served_nor_cached`).
+* Request bodies were buffered without a bound; now 64 MiB (413 / 400), large-upload text fields 1 MiB.
+* Blocking `std::fs` calls on runtime workers (`resolve_local_path`, `resolve_file_on_disk`, getFile) moved to the
+  blocking pool, one hop per file served (no throughput change, see 7.2).
+* Expired getMe session: every concurrent request refreshed it from upstream; now exactly one does.

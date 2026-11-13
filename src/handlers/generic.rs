@@ -14,6 +14,11 @@ use crate::server::SharedState;
 
 /// Largest request body that is buffered in memory (multipart uploads above 49 MB are spooled to
 /// disk by `large_upload` instead). Bounds the memory one request can pin.
+///
+/// Deviation from the C++ server, which keeps no request body in memory at all
+/// (`HttpServer::MAX_IN_MEMORY_POST_SIZE = 0`: bigger bodies go to temporary files): bodies above
+/// this size are rejected with 413 instead of being spooled, because the only legitimate large
+/// bodies are file uploads, and those take the `large_upload` path.
 const MAX_BUFFERED_BODY: usize = 64 * 1024 * 1024;
 
 /// The `Content-Length` of a request (0 when absent or malformed).
