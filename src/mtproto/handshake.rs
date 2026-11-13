@@ -317,29 +317,33 @@ impl<'a> MtProtoHandshake<'a> {
             return Err(Error::new(ErrorKind::InvalidData, "g_a is out of the allowed range"));
         }
 
-        // Compute Diffie-Hellman g_b = g^b mod p and auth_key = g_a^b mod p
-        let one = BigUint::from(1u32);
-        let b = loop {
-            let mut b_raw = [0u8; 256];
-            rand::thread_rng().fill_bytes(&mut b_raw);
-            let cand = BigUint::from_bytes_be(&b_raw);
-            if cand > one && cand < &prime - &one {
-                break cand;
+        // Compute Diffie-Hellman g_b = g^b mod p and auth_key = g_a^b mod p. Two 2048-bit modular
+        // exponentiations cost milliseconds of CPU, so they run off the async workers.
+        let (g_b_padded, auth_key) = tokio::task::spawn_blocking(move || -> Result<([u8; 256], [u8; 256]), Error> {
+            let one = BigUint::from(1u32);
+            let b = loop {
+                let mut b_raw = [0u8; 256];
+                rand::thread_rng().fill_bytes(&mut b_raw);
+                let cand = BigUint::from_bytes_be(&b_raw);
+                if cand > one && cand < &prime - &one {
+                    break cand;
+                }
+            };
+            let g_b_val = BigUint::from(g as u32).modpow(&b, &prime);
+            if !dh_value_in_range(&g_b_val, &prime) {
+                return Err(Error::new(ErrorKind::InvalidData, "g_b is out of the allowed range"));
             }
-        };
-        let g_big = BigUint::from(g as u32);
+            let g_b_vec = g_b_val.to_bytes_be();
+            let mut g_b_padded = [0u8; 256];
+            g_b_padded[256 - g_b_vec.len()..].copy_from_slice(&g_b_vec);
 
-        let g_b_val = g_big.modpow(&b, &prime);
-        if !dh_value_in_range(&g_b_val, &prime) {
-            return Err(Error::new(ErrorKind::InvalidData, "g_b is out of the allowed range"));
-        }
-        let g_b_vec = g_b_val.to_bytes_be();
-        let mut g_b_padded = [0u8; 256];
-        g_b_padded[256 - g_b_vec.len()..].copy_from_slice(&g_b_vec);
-
-        let g_ab_vec = g_a.modpow(&b, &prime).to_bytes_be();
-        let mut auth_key = [0u8; 256];
-        auth_key[256 - g_ab_vec.len()..].copy_from_slice(&g_ab_vec);
+            let g_ab_vec = g_a.modpow(&b, &prime).to_bytes_be();
+            let mut auth_key = [0u8; 256];
+            auth_key[256 - g_ab_vec.len()..].copy_from_slice(&g_ab_vec);
+            Ok((g_b_padded, auth_key))
+        })
+        .await
+        .map_err(Error::other)??;
 
         // 6. Send set_client_DH_params#f5045f1f
         let mut client_inner = BytesMut::with_capacity(320);
