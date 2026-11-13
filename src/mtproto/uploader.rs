@@ -27,6 +27,8 @@ pub struct UploadedMediaResult {
     pub date: i64,
     pub doc_id: i64,
     pub access_hash: i64,
+    /// Empty when the answer carried no document (then no usable file_id can be built).
+    pub file_reference: Vec<u8>,
     pub file_size: i64,
     pub file_name: String,
     pub mime_type: String,
@@ -163,13 +165,14 @@ pub async fn upload_file(req: &UploadRequest<'_>) -> Result<UploadedMediaResult,
     };
 
     // 5. Parse message_id and document metadata from Updates response
-    let (message_id, date, doc_id, access_hash) = parse_send_media_updates(&send_resp, random_id);
+    let sent = parse_send_media_updates(&send_resp, random_id);
 
     Ok(UploadedMediaResult {
-        message_id,
-        date,
-        doc_id,
-        access_hash,
+        message_id: sent.message_id,
+        date: sent.date,
+        doc_id: sent.doc_id,
+        access_hash: sent.access_hash,
+        file_reference: sent.file_reference,
         file_size: file_size as i64,
         file_name,
         mime_type,

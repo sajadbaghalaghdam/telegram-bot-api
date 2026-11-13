@@ -13,6 +13,8 @@ use super::engine::{TelegramEngine, STREAM_BUFFER_SIZE};
 use super::util::TempFile;
 use crate::error::{TelegramError, TelegramResult};
 use crate::models::File;
+use crate::mtproto::file_id::{encode_document_file_id, encode_document_unique_id, file_type};
+use crate::mtproto::uploader::UploadedMediaResult;
 use crate::mtproto::{MediaAttrs, MediaKind};
 
 /// One large-file upload request (send* method with a local file > 49 MB).
@@ -69,6 +71,7 @@ impl TelegramEngine {
                 }
 
         // 2. Execute Pure-Rust MTProto 2.0 parallel 512 KB chunked upload + messages.sendMedia
+        let attrs = media_attrs_for(method, extra_fields);
         let uploaded = crate::mtproto::upload_and_send_large_file_typed(
             self.api_id,
             &self.api_hash,
@@ -78,68 +81,34 @@ impl TelegramEngine {
             local_path,
             caption,
             custom_file_name,
-            media_attrs_for(method, extra_fields),
+            attrs,
         )
         .await
         .map_err(|e| TelegramError::BadRequest(format!("MTProto upload failed: {e}")))?;
 
-        // 3. Register uploaded file in local SQLite WAL storage for getFile lookups
-        let file_id_str = format!(
-            "BQACAgIAAxkBAAI{:x}_{}",
-            uploaded.doc_id as u64, uploaded.message_id
-        );
-        let file_unique_id_str = format!("AgAD{:x}", (uploaded.doc_id as u64) & 0xffffffff);
-        let local_path_str = local_path.to_string_lossy().to_string();
-
+        // 3. Bot API ids of the sent document, registered in local storage for getFile lookups
+        let (file_id_str, file_unique_id_str) = sent_file_ids(attrs.kind, &uploaded);
         self.storage
             .save_cached_file(&File {
                 file_id: file_id_str.clone(),
                 file_unique_id: file_unique_id_str.clone(),
                 file_size: Some(uploaded.file_size),
-                file_path: Some(local_path_str),
+                file_path: Some(local_path.to_string_lossy().into_owned()),
             })
             .await;
 
-        // 4. Build standard Bot API Message JSON response matching requested method
-        let media_field = match media_attrs_for(method, None).kind {
-            MediaKind::Video => "video",
-            MediaKind::VideoNote => "video_note",
-            MediaKind::Animation => "animation",
-            MediaKind::Audio => "audio",
-            MediaKind::Voice => "voice",
-            MediaKind::Document => {
-                if method.to_ascii_lowercase().contains("photo") { "photo" } else { "document" }
-            }
-        };
-
-        let mut msg_obj = serde_json::json!({
-            "message_id": uploaded.message_id,
-            "chat": chat_json,
-            "date": uploaded.date,
-            media_field: {
-                "file_name": uploaded.file_name,
-                "mime_type": uploaded.mime_type,
-                "file_id": file_id_str,
-                "file_unique_id": file_unique_id_str,
-                "file_size": uploaded.file_size
-            }
+        // 4. The Bot API Message of the send
+        let from = bot_user.and_then(|u| serde_json::to_value(u).ok());
+        let msg_obj = large_upload_message(LargeUploadMessage {
+            attrs: &attrs,
+            uploaded: &uploaded,
+            file_id: &file_id_str,
+            file_unique_id: &file_unique_id_str,
+            chat: chat_json,
+            from,
+            caption,
+            request: extra_fields,
         });
-
-        if let Some(u) = bot_user
-            && let Ok(u_val) = serde_json::to_value(u) {
-                msg_obj["from"] = u_val;
-            }
-        if !caption.is_empty() {
-            msg_obj["caption"] = Value::String(caption.to_string());
-        }
-        if let Some(extras) = extra_fields {
-            for (k, v) in extras.iter() {
-                if k != "chat_id" && k != "caption" && !k.starts_with("file") {
-                    msg_obj[k] = v.clone();
-                }
-            }
-        }
-
         let full_resp = serde_json::json!({
             "ok": true,
             "result": msg_obj
@@ -316,9 +285,215 @@ pub fn media_attrs_for(
     MediaAttrs { kind, duration: num("duration"), width, height, supports_streaming }
 }
 
+/// Bot API `file_id` and `file_unique_id` of a document sent over MTProto, in TDLib's format so
+/// the client can send the file again by id. Without a document in Telegram's answer (no
+/// access hash) only placeholder ids can be given.
+fn sent_file_ids(kind: MediaKind, uploaded: &UploadedMediaResult) -> (String, String) {
+    if uploaded.access_hash == 0 {
+        return (
+            format!("BQACAgIAAxkBAAI{:x}_{}", uploaded.doc_id as u64, uploaded.message_id),
+            format!("AgAD{:x}", (uploaded.doc_id as u64) & 0xffffffff),
+        );
+    }
+    let file_type = match kind {
+        MediaKind::Video => file_type::VIDEO,
+        MediaKind::VideoNote => file_type::VIDEO_NOTE,
+        MediaKind::Animation => file_type::ANIMATION,
+        MediaKind::Audio => file_type::AUDIO,
+        MediaKind::Voice => file_type::VOICE_NOTE,
+        MediaKind::Document => file_type::DOCUMENT,
+    };
+    (
+        encode_document_file_id(
+            file_type,
+            uploaded.dc_id,
+            uploaded.doc_id,
+            uploaded.access_hash,
+            &uploaded.file_reference,
+        ),
+        encode_document_unique_id(uploaded.doc_id),
+    )
+}
+
+/// Everything the Bot API `Message` of a large MTProto upload is built from.
+struct LargeUploadMessage<'a> {
+    attrs: &'a MediaAttrs,
+    uploaded: &'a UploadedMediaResult,
+    file_id: &'a str,
+    file_unique_id: &'a str,
+    chat: Value,
+    from: Option<Value>,
+    caption: &'a str,
+    /// The request parameters: only the few that are also `Message` fields are taken over.
+    request: Option<&'a serde_json::Map<String, Value>>,
+}
+
+/// The Bot API `Message` of a large MTProto upload, with the media object of the sent kind and
+/// the fields the Bot API requires in it (`width`/`height`/`duration` of a video, ...).
+/// Request parameters are not copied over wholesale: the request's media field (a `file://`
+/// path) would replace the media object and break clients that read the answer as a `Message`.
+fn large_upload_message(m: LargeUploadMessage<'_>) -> Value {
+    let LargeUploadMessage { attrs, uploaded, file_id, file_unique_id, chat, from, caption, request } = m;
+    let mut media = serde_json::json!({
+        "file_id": file_id,
+        "file_unique_id": file_unique_id,
+        "file_size": uploaded.file_size,
+    });
+    let named = || {
+        serde_json::json!({ "file_name": uploaded.file_name, "mime_type": uploaded.mime_type })
+    };
+    let (field, extra) = match attrs.kind {
+        MediaKind::Video => ("video", serde_json::json!({
+            "width": attrs.width, "height": attrs.height, "duration": attrs.duration,
+            "file_name": uploaded.file_name, "mime_type": uploaded.mime_type,
+        })),
+        MediaKind::Animation => ("animation", serde_json::json!({
+            "width": attrs.width, "height": attrs.height, "duration": attrs.duration,
+            "file_name": uploaded.file_name, "mime_type": uploaded.mime_type,
+        })),
+        MediaKind::VideoNote => ("video_note", serde_json::json!({
+            "length": attrs.width, "duration": attrs.duration,
+        })),
+        MediaKind::Audio => ("audio", serde_json::json!({
+            "duration": attrs.duration, "file_name": uploaded.file_name, "mime_type": uploaded.mime_type,
+        })),
+        MediaKind::Voice => ("voice", serde_json::json!({
+            "duration": attrs.duration, "mime_type": uploaded.mime_type,
+        })),
+        // sendPhoto/sendDocument above the HTTP limit go up as a plain file (force_file).
+        MediaKind::Document => ("document", named()),
+    };
+    if let (Value::Object(media), Value::Object(extra)) = (&mut media, extra) {
+        media.extend(extra);
+    }
+
+    let mut msg = serde_json::json!({
+        "message_id": uploaded.message_id,
+        "chat": chat,
+        "date": uploaded.date,
+    });
+    msg[field] = media;
+    if let Some(from) = from {
+        msg["from"] = from;
+    }
+    if !caption.is_empty() {
+        msg["caption"] = Value::String(caption.to_string());
+    }
+    if let Some(request) = request {
+        let truthy = |k: &str| match request.get(k) {
+            Some(Value::Bool(b)) => *b,
+            Some(Value::String(s)) => matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1"),
+            _ => false,
+        };
+        if truthy("show_caption_above_media") {
+            msg["show_caption_above_media"] = Value::Bool(true);
+        }
+        if truthy("has_spoiler") {
+            msg["has_media_spoiler"] = Value::Bool(true);
+        }
+        // An inline keyboard is shown with the message as it was sent; other markups are not part of it.
+        let markup = match request.get("reply_markup") {
+            Some(Value::String(s)) => serde_json::from_str::<Value>(s).ok(),
+            other => other.cloned(),
+        };
+        if let Some(markup) = markup.filter(|m| m.get("inline_keyboard").is_some()) {
+            msg["reply_markup"] = markup;
+        }
+    }
+    msg
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn uploaded(access_hash: i64) -> UploadedMediaResult {
+        UploadedMediaResult {
+            message_id: 77,
+            date: 1_763_000_000,
+            doc_id: 5_870_974_149_056_271_904,
+            access_hash,
+            file_reference: vec![1, 0, 0, 2, 3],
+            file_size: 2_043_000_000,
+            file_name: "1.mp4".into(),
+            mime_type: "video/mp4".into(),
+            dc_id: 4,
+        }
+    }
+
+    #[test]
+    fn large_video_answer_is_a_message_with_a_video() {
+        // What instabot sent: the request's `video` is a file:// path and must not reach the answer.
+        let request: serde_json::Map<String, Value> = serde_json::from_str(
+            r#"{"chat_id":123,"video":"file:///opt/instabot/downloads/tmp/job/1.mp4","width":1920,"height":1080,
+                "duration":3600,"supports_streaming":true,"thumbnail":"file:///opt/x/1.thumb.jpg",
+                "parse_mode":"HTML","caption":"hi","reply_parameters":{"message_id":5},
+                "reply_markup":{"inline_keyboard":[[{"text":"a","url":"https://t.me"}]]}}"#,
+        )
+        .unwrap();
+        let attrs = media_attrs_for("sendVideo", Some(&request));
+        let up = uploaded(-99);
+        let (file_id, unique) = sent_file_ids(attrs.kind, &up);
+        let msg = large_upload_message(LargeUploadMessage {
+            attrs: &attrs,
+            uploaded: &up,
+            file_id: &file_id,
+            file_unique_id: &unique,
+            chat: serde_json::json!({"id": 123, "type": "private"}),
+            from: None,
+            caption: "hi",
+            request: Some(&request),
+        });
+        let video = &msg["video"];
+        assert!(video.is_object(), "{msg}");
+        assert_eq!((video["width"].as_i64(), video["height"].as_i64(), video["duration"].as_i64()), (Some(1920), Some(1080), Some(3600)));
+        assert_eq!(video["file_id"], file_id.as_str());
+        assert!(unique.starts_with("AgAD"));
+        for absent in ["thumbnail", "parse_mode", "reply_parameters", "width", "supports_streaming", "chat_id"] {
+            assert!(msg.get(absent).is_none(), "{absent} leaked into the answer: {msg}");
+        }
+        assert_eq!(msg["reply_markup"]["inline_keyboard"][0][0]["text"], "a");
+        assert_eq!(msg["caption"], "hi");
+
+        // The file_id names the sent document, with its file reference.
+        let loc = crate::mtproto::file_id::decode_file_id(&file_id).unwrap();
+        assert_eq!((loc.file_type, loc.dc_id, loc.doc_id, loc.access_hash), (file_type::VIDEO, 4, up.doc_id, -99));
+        assert_eq!(loc.file_reference, up.file_reference);
+    }
+
+    #[test]
+    fn other_kinds_carry_their_required_fields() {
+        let up = uploaded(5);
+        for (method, field, keys) in [
+            ("sendAudio", "audio", &["duration", "file_name"][..]),
+            ("sendVoice", "voice", &["duration"][..]),
+            ("sendVideoNote", "video_note", &["length", "duration"][..]),
+            ("sendAnimation", "animation", &["width", "height", "duration"][..]),
+            ("sendDocument", "document", &["file_name", "mime_type"][..]),
+            ("sendPhoto", "document", &["file_name"][..]),
+        ] {
+            let attrs = media_attrs_for(method, None);
+            let msg = large_upload_message(LargeUploadMessage {
+                attrs: &attrs,
+                uploaded: &up,
+                file_id: "x",
+                file_unique_id: "y",
+                chat: Value::Null,
+                from: None,
+                caption: "",
+                request: None,
+            });
+            for k in keys {
+                assert!(msg[field].get(*k).is_some(), "{method}: {field}.{k} missing in {msg}");
+            }
+        }
+    }
+
+    #[test]
+    fn no_document_in_answer_gives_placeholder_ids() {
+        let (id, _) = sent_file_ids(MediaKind::Video, &uploaded(0));
+        assert!(id.starts_with("BQACAgIAAxkBAAI"));
+    }
 
     #[test]
     fn attrs_from_fields() {
