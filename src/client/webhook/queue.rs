@@ -9,6 +9,9 @@ use super::update::QueueId;
 use super::window::{Window, POLL_LIMIT};
 
 /// One loaded update: the exact bytes upstream sent (a slice of the poll reply, not a copy).
+/// The slice keeps its poll reply alive until the update is delivered; fewer than [`POLL_LIMIT`]
+/// updates are loaded at any time and a reply holds at most that many, so a bot pins at most
+/// `POLL_LIMIT` replies of `POLL_LIMIT` updates each (and in practice one or two).
 pub(super) struct Item {
     pub(super) id: i64,
     pub(super) body: Bytes,
