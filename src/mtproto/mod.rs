@@ -1,17 +1,27 @@
+//! Native MTProto 2.0 client used for large file up/downloads (up to 2000 MB).
+//!
+//! Layering, bottom to top:
+//! * wire: `tl` (serialisation), `crypto` (IGE, KDF, RSA, factorize), `packet` (encrypt/decrypt
+//!   frames in place), `transport` (intermediate transport with timeouts), `session` (ids, seq_no);
+//! * `handshake`: DH key exchange; `auth`: per-bot auth-key caches, bot login, cross-DC import;
+//! * `connection`: `MtProtoConnection` RPC / pipelined batch primitives; `rpc_error`, `gzip`;
+//! * building blocks: `peer` (InputPeer), `media` (sendMedia TL), `updates` (response parsing),
+//!   `file_id` (Bot API file_id decoding);
+//! * transfers: `upload_parts` (part workers) + `uploader` (entry point); `downloader`.
 pub mod auth;
 #[cfg(test)]
 mod bench_tests;
-#[cfg(test)]
-mod e2e_tests;
-#[cfg(test)]
-mod mock_dc;
 pub mod connection;
 pub mod crypto;
 pub mod downloader;
+#[cfg(test)]
+mod e2e_tests;
 pub mod file_id;
 pub mod gzip;
 pub mod handshake;
 pub mod media;
+#[cfg(test)]
+mod mock_dc;
 pub mod packet;
 pub mod peer;
 pub mod rpc_error;
