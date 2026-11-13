@@ -32,6 +32,8 @@ enum WriteOp {
     UpsertFile { file_id: String, file_unique_id: String, file_size: Option<i64>, local_path: String, now: i64 },
     UpsertWebhook { token: String, record: WebhookRecord, now: i64 },
     DeleteWebhook { token: String },
+    /// Deletes the row only while it still holds this URL (a replaced worker must not remove its successor's row).
+    DeleteWebhookIf { token: String, url: String },
     /// Acknowledged once everything queued before it has been applied.
     Barrier,
 }
@@ -292,6 +294,11 @@ impl StorageEngine {
                 "delete webhook",
                 conn.prepare_cached("DELETE FROM webhooks WHERE token = ?1").and_then(|mut st| st.execute(params![token])),
             ),
+            WriteOp::DeleteWebhookIf { token, url } => (
+                "delete webhook",
+                conn.prepare_cached("DELETE FROM webhooks WHERE token = ?1 AND url = ?2")
+                    .and_then(|mut st| st.execute(params![token, url])),
+            ),
             WriteOp::Barrier => return,
         };
         if let Err(e) = res {
@@ -543,6 +550,11 @@ impl StorageEngine {
         self.write(WriteOp::DeleteWebhook { token: token.to_string() }).await;
     }
 
+    /// Deletes the webhook row only if it still points at `url` (compare-and-delete).
+    pub async fn delete_webhook_if(&self, token: &str, url: &str) {
+        self.write(WriteOp::DeleteWebhookIf { token: token.to_string(), url: url.to_string() }).await;
+    }
+
     /// Loads all saved webhook records from SQLite WAL on startup.
     pub async fn get_all_webhooks(&self) -> Vec<(String, WebhookRecord)> {
         self.read(|conn| {
@@ -644,6 +656,31 @@ mod tests {
         st.save_cached_file(&f).await;
         st.l1_files.clear();
         assert_eq!(st.get_cached_file("f").await.unwrap().file_unique_id, "u");
+        st.flush().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stale_worker_delete_keeps_the_replacement_row() {
+        let dir = test_dir("cad");
+        let st = StorageEngine::new(&dir).unwrap();
+
+        // A replaced worker (old url) deleting after the new row was saved: the new row stays.
+        st.save_webhook("w", "http://old/x", None, 40, None, None).await;
+        st.save_webhook("w", "http://new/x", None, 40, None, None).await;
+        st.delete_webhook_if("w", "http://old/x").await;
+        assert_eq!(st.get_webhook("w").await.unwrap().url, "http://new/x");
+
+        // The current worker (same url) deleting: the row goes.
+        st.delete_webhook_if("w", "http://new/x").await;
+        assert!(st.get_webhook("w").await.is_none());
+
+        // Old delete queued before the new save (the other order): the new row stays too.
+        st.save_webhook("w", "http://old/x", None, 40, None, None).await;
+        st.delete_webhook_if("w", "http://old/x").await;
+        st.save_webhook("w", "http://new/x", None, 40, None, None).await;
+        assert_eq!(st.get_webhook("w").await.unwrap().url, "http://new/x");
+
         st.flush().await;
         let _ = std::fs::remove_dir_all(&dir);
     }

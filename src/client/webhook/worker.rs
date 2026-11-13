@@ -152,7 +152,7 @@ pub(super) async fn run_worker(engine: Arc<TelegramEngine>, cfg: WorkerConfig, s
         if ctx.closed.load(Ordering::Relaxed) {
             tracing::warn!("Closing webhook of a bot because of HTTP 410 errors");
             if is_current(&engine, &token, state.generation) {
-                engine.storage.delete_webhook(&token).await;
+                engine.storage.delete_webhook_if(&token, &url).await;
             }
             break;
         }
@@ -197,7 +197,7 @@ pub(super) async fn run_worker(engine: Arc<TelegramEngine>, cfg: WorkerConfig, s
                 state.record_error(&msg);
                 // Do not restart a dead bot's webhook on every boot.
                 if is_current(&engine, &token, state.generation) {
-                    engine.storage.delete_webhook(&token).await;
+                    engine.storage.delete_webhook_if(&token, &url).await;
                 }
                 break;
             }
