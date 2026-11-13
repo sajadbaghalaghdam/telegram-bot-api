@@ -264,7 +264,14 @@ fn bench_packet() {
 
 // ---------------------------------------------------------------- end-to-end (loopback mock DC)
 
-const MOCK_DOWNLOAD_SIZE: u64 = 128 * 1024 * 1024 + 12345;
+/// Transfer size of the e2e benches in MiB (`MTPROTO_BENCH_MIB`, default 128).
+fn bench_mib() -> usize {
+    std::env::var("MTPROTO_BENCH_MIB").ok().and_then(|v| v.parse().ok()).unwrap_or(128)
+}
+
+fn mock_download_size() -> u64 {
+    (bench_mib() * 1024 * 1024 + 12345) as u64
+}
 
 fn make_file(size: usize) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("mtproto_bench_{}.bin", std::process::id()));
@@ -277,7 +284,7 @@ fn make_file(size: usize) -> std::path::PathBuf {
 async fn bench_e2e_upload() {
     mock_dc::start();
     let st = profile(Profile::Bench);
-    let size = 128 * 1024 * 1024usize;
+    let size = bench_mib() * 1024 * 1024usize;
     let path = make_file(size);
     let mut runs = Vec::new();
     for _ in 0..3 {
@@ -305,8 +312,8 @@ async fn bench_e2e_upload() {
         });
     }
     std::fs::remove_file(&path).ok();
-    report("e2e_upload_128MiB", size as f64 / 1048576.0, &runs, (size / CHUNK) as f64, "part");
-    println!("BENCH e2e_upload: process VmHWM {} KiB (includes the 128 MiB-file page cache? no: RSS only)", rss_kib());
+    report(&format!("e2e_upload_{}MiB", bench_mib()), size as f64 / 1048576.0, &runs, (size / CHUNK) as f64, "part");
+    println!("BENCH e2e_upload: process VmHWM {} KiB", rss_kib());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -314,7 +321,7 @@ async fn bench_e2e_upload() {
 async fn bench_e2e_download() {
     mock_dc::start();
     let st = profile(Profile::Bench);
-    let file_id = encode_file_id(4, MOCK_DOWNLOAD_SIZE as i64);
+    let file_id = encode_file_id(4, mock_download_size() as i64);
     let dir = std::env::temp_dir().join(format!("mtproto_bench_dl_{}", std::process::id()));
     let mut runs = Vec::new();
     for _ in 0..3 {
@@ -329,9 +336,9 @@ async fn bench_e2e_download() {
         let secs = t.elapsed().as_secs_f64();
         let (a1, c1) = (snap(), client_cpu_secs());
         let peak = PEAK.load(Ordering::Relaxed).saturating_sub(base_live);
-        assert_eq!(total, MOCK_DOWNLOAD_SIZE);
+        assert_eq!(total, mock_download_size());
         let data = std::fs::read(&path).unwrap();
-        assert_eq!(data.len() as u64, MOCK_DOWNLOAD_SIZE);
+        assert_eq!(data.len() as u64, mock_download_size());
         for (i, c) in data.chunks(CHUNK).enumerate() {
             assert!(c.iter().all(|&b| b == i as u8), "chunk {i} corrupted");
         }
@@ -345,10 +352,10 @@ async fn bench_e2e_download() {
     }
     std::fs::remove_dir_all(&dir).ok();
     report(
-        "e2e_download_128MiB",
-        MOCK_DOWNLOAD_SIZE as f64 / 1048576.0,
+        &format!("e2e_download_{}MiB", bench_mib()),
+        mock_download_size() as f64 / 1048576.0,
         &runs,
-        MOCK_DOWNLOAD_SIZE.div_ceil(CHUNK as u64) as f64,
+        mock_download_size().div_ceil(CHUNK as u64) as f64,
         "part",
     );
 }
