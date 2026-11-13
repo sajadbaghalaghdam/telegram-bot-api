@@ -234,3 +234,56 @@ the suite (the commit message of an optimisation should quote before/after from 
   and results depend on oha and the mock competing for the same 8 vCPUs.
 * Runtime binary is the patched copy with debug symbols (44 MB on disk); only static numbers use the
   repository's stripped 7.7 MB binary.
+
+## 7. Round 4B results (webhook delivery)
+
+Scope: `src/client/webhook/` (split out of the 1982-line `webhook.rs`, see the module map in
+`webhook/mod.rs`). Same methodology as section 3.6 (`bench/webhook.sh`, release binary with symbols,
+patched upstream URL, mock `/hook`), **best / minimum of 3 runs**, shared 8-CPU machine with load
+average 6-9 from the other writers (so absolute numbers are lower-confidence than section 3.6, and
+the baseline was re-measured under the same load rather than copied from 3.6). "Before" is commit
+`6ca39fd` (the pure code move, behaviourally identical to the section 3 baseline).
+
+| case | metric | before | + raw update slices etc. | + poll gap (HEAD) |
+|---|---|---|---|---|
+| 200 chats, 50k updates | updates/s (best of 3) | 32,293 | 47,344 | **49,504** |
+| | server CPU (min of 3) | 4.62 s (92 us/update) | 3.56 s (71 us) | **3.38 s (68 us)** |
+| | RSS high-water mark (min) | 17.98 MB | 15.67 MB | **13.33 MB** |
+| 1 chat, 3k updates (serial FIFO) | updates/s (best of 3) | 2,471 | 6,495 | **7,365** |
+| | server CPU (min of 3) | 1.10 s | 0.34 s | **0.18 s** |
+| 5k -> 25k updates, `heaptrack` slope | allocations per delivered update | 135.3 | 50.8 | **49.8** |
+
+What the changes were, and what each bought:
+
+* **Raw update slices** (`5f1aee9`): the poll reply is one `Bytes`, each update a slice of it, posted
+  byte for byte; only `update_id` (prefix scan) and the ordering key (typed `serde` visitor) are
+  parsed, and only for ids not already known. This removed `a.clone()` of the array, a `Value` tree per
+  update, `to_vec` per update, and the scheduler lock held while all of that ran (not separately
+  measured, but the most likely cause of the single-chat gap: the queue task of the only chat had to
+  wait for the worker's admit loop). The same commit also contains
+  smaller changes (delivery target parsed once, no per-delivery `String` clones, atomic 410 tracking
+  instead of a mutex per delivery, `Window::finish` without `split_off`, finish+next under one lock,
+  copy-free tiny replies, bounded reply executor). They were measured only together with the slice
+  change; none was reverted, but their individual shares are not separated.
+* **Poll gap** (`f894af2`): with the watermark offset every poll re-reads all unconfirmed updates, and
+  the worker polled after every finished update, i.e. mostly fetched ~100 updates to admit a few.
+  Now a poll waits for a quarter of the maximum load to fit (else at most every 50 ms): +4.6% updates/s
+  and -5% CPU (200 chats), +13% / -47% CPU (1 chat) over the previous commit.
+* **Is the single-chat rate RTT bound?** An ideal serial client (`oha -c 1` straight at the mock
+  `/hook`) reaches ~13.8k req/s (12.8k-14.5k) on this machine, i.e. ~72 us per round trip. The
+  delivery loop now does 7.4k/s (~136 us), so it was *not* RTT bound before (2.5k/s, it was the lock
+  plus parsing), and the remaining gap to the ideal client is reqwest/hyper client work plus the task
+  hops (queue task -> connection task -> queue task).
+* **Where the CPU goes now** (perf, 100k updates over 200 chats, `raw` build): kernel 52.7%
+  (loopback TCP, futex, scheduler), libc 14.8% (malloc/free), server binary 32.0%; the webhook code
+  itself is under 3% (`run_queue` 1.8%, `run_worker` 0.5%); the rest is hyper/reqwest. One visible
+  non-webhook cost: reqwest 0.12 re-parses the response URL of every request (`tower_http` `RequestUri`
+  extension -> `Url::parse`, ~4 allocations, 8.3% of the remaining allocations) and this cannot be
+  switched off through the client configuration (the redirect layer is always installed).
+* **Not a speed change:** reply-method calls are bounded (queue 256, 32 concurrent, drop-on-overflow
+  with a rate-limited warning) and owned by the worker, `setWebhook` throttle map is hard-bounded
+  (65,536 entries), see the commit messages.
+
+Reproduce: `bench/build.sh` on the commit, then `bench/webhook.sh <dir>` three times under
+`flock /tmp/bench.lock`; allocations with the `heap.sh` method (heaptrack, N = 5000 and 25000) but
+driving `setWebhook` + the mock `getUpdates` instead of `sendMessage` (`bench/heap_webhook.sh`).
